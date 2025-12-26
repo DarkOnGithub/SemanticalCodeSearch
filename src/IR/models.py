@@ -1,13 +1,28 @@
 from dataclasses import dataclass, field
 from typing import Dict, Optional, Any
 from enum import Enum
+import json
 
 class SnippetType(Enum):
     FUNCTION = "function"
     CLASS = "class"
     METHOD = "method"
     STRUCT = "struct"
+    ENUM = "enum"
     MODULE = "module"
+    FILE = "file"
+    PLACEHOLDER = "placeholder"
+
+class RelationType(Enum):
+    DEFINES = "defines"
+    CALLS = "calls"
+    IMPORTS = "imports"
+    INHERITS = "inherits"
+    OVERRIDES = "overrides"
+    RETURNS = "returns"
+    DECORATED_BY = "decorated_by"
+    MODIFIES = "modifies"
+    INSTANTIATES = "instantiates"
 
 @dataclass
 class CodeSnippet:
@@ -31,3 +46,13 @@ class CodeSnippet:
 
     def __repr__(self):
         return self.__str__()
+
+@dataclass
+class Relationship:
+    source_id: str
+    target_id: str
+    type: RelationType
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+    def to_tuple(self):
+        return (self.source_id, self.target_id, self.type.value, json.dumps(self.metadata) if self.metadata else None)

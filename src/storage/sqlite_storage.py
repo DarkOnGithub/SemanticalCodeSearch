@@ -1,7 +1,7 @@
 import os
 import sqlite3
 import json
-from typing import List, Optional, Any
+from typing import List
 from src.IR.models import CodeSnippet, SnippetType
 
 class SQLiteStorage:
@@ -56,6 +56,18 @@ class SQLiteStorage:
                     s.end_byte,
                     json.dumps(s.metadata)
                 ))
+            conn.commit()
+
+    def get_all_file_paths(self) -> List[str]:
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT file_path FROM snippets WHERE file_path IS NOT NULL")
+            return [row[0] for row in cursor.fetchall()]
+
+    def delete_file_snippets(self, file_path: str):
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM snippets WHERE file_path = ?", (file_path,))
             conn.commit()
 
     def get_all_snippets(self) -> List[CodeSnippet]:

@@ -5,6 +5,7 @@ from src.IR.models import CodeSnippet
 class BaseParser(ABC):
     def __init__(self, chunk_size: int = 8000):
         self._tree_cache: Dict[str, Any] = {}
+        self._code_cache: Dict[str, str] = {}
         self._snippet_cache: Dict[str, List[CodeSnippet]] = {}
         self._content_hash_cache: Dict[str, str] = {}
         self._metadata_cache: Dict[str, Dict[str, Any]] = {}

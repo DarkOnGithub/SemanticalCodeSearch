@@ -50,6 +50,7 @@ class CParser(BaseParser):
         
         if file_path:
             self._tree_cache[file_path] = tree
+            self._code_cache[file_path] = code
 
         query = Query(self.language, self.get_query())
         cursor = QueryCursor(query)
@@ -132,11 +133,13 @@ class CParser(BaseParser):
                 end_line=node.end_point[0],
                 start_byte=node.start_byte,
                 end_byte=node.end_byte,
-                metadata={"chunk_index": chunk_index} if chunk_index is not None else {}
+                metadata={"chunk_index": chunk_index, "ts_node_id": node.id} if chunk_index is not None else {"ts_node_id": node.id}
             )
 
         if tag == "function.def":
             snippet_type = SnippetType.FUNCTION
+        elif "enum" in tag:
+            snippet_type = SnippetType.ENUM
         else:
             snippet_type = SnippetType.STRUCT 
 
@@ -202,6 +205,10 @@ class CParser(BaseParser):
             "signature": signature
         }
 
+        metadata = {"ts_node_id": node.id}
+        if chunk_index is not None:
+            metadata["chunk_index"] = chunk_index
+
         return CodeSnippet(
             id=snippet_id,
             name=name,
@@ -215,5 +222,5 @@ class CParser(BaseParser):
             end_line=node.end_point[0],
             start_byte=node.start_byte,
             end_byte=node.end_byte,
-            metadata={"chunk_index": chunk_index} if chunk_index is not None else {}
+            metadata=metadata
         )

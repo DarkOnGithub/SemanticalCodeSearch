@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "kuzu>=0.11.3",
     "llama-index-core>=0.14.10",
     "llama-index-llms-openai>=0.6.12",
     "llama-index-packs-code-hierarchy>=0.6.1",
