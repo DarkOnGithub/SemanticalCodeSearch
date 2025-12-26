@@ -6,11 +6,14 @@ from src.IR.models import CodeSnippet, SnippetType
 import hashlib
 from tree_sitter import Query, QueryCursor
 
+from src.parsers.chunker import CodeChunker
+
 class PythonParser(BaseParser):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, chunk_size: int = 1500):
+        super().__init__(chunk_size=chunk_size)
         self.language = Language(tspython.language())
         self.parser = Parser(self.language)
+        self.chunker = CodeChunker(language="python", max_chars=chunk_size)
 
     @property
     def language_id(self) -> str:
@@ -58,23 +61,36 @@ class PythonParser(BaseParser):
         snippets = []
         for node, tag in all_captures:
             if tag in ["class.def", "function.def"]:
-                snippet = self._extract_snippet(node, tag, code, file_path)
-            if snippet:
-                snippets.append(snippet)
+                extracted = self._extract_snippets(node, tag, code, file_path)
+                snippets.extend(extracted)
         
         if file_path:
             self.cache_snippets(file_path, snippets)
             
         return snippets
 
-    def _extract_snippet(self, node, tag, code, file_path) -> CodeSnippet:
+    def _extract_snippets(self, node, tag, code, file_path) -> List[CodeSnippet]:
         snippet_content = code[node.start_byte:node.end_byte]
+        
+        if len(snippet_content) <= self.chunk_size:
+            return [self._create_snippet(node, tag, code, file_path, snippet_content)]
+        
+        # If too large, chunk it using LlamaIndex CodeSplitter
+        chunks = self.chunker.chunk(snippet_content)
+        
+        snippets = []
+        for i, chunk_content in enumerate(chunks):
+            # Create a base snippet for the chunk
+            snippet = self._create_snippet(node, tag, code, file_path, chunk_content, chunk_index=i)
+            snippets.append(snippet)
+        
+        return snippets
+
+    def _create_snippet(self, node, tag, code, file_path, snippet_content, chunk_index: Optional[int] = None) -> CodeSnippet:
         snippet_id = hashlib.sha256(snippet_content.encode("utf-8")).hexdigest()
 
-        # Check metadata cache for this specific content
         cached_meta = self._metadata_cache.get(snippet_id)
         if cached_meta:
-            # We still need to update positional info as it might have shifted
             return CodeSnippet(
                 id=snippet_id,
                 name=cached_meta["name"],
@@ -87,12 +103,12 @@ class PythonParser(BaseParser):
                 start_line=node.start_point[0],
                 end_line=node.end_point[0],
                 start_byte=node.start_byte,
-                end_byte=node.end_byte
+                end_byte=node.end_byte,
+                metadata={"chunk_index": chunk_index} if chunk_index is not None else {}
             )
 
         snippet_type = SnippetType.CLASS if "class" in tag else SnippetType.FUNCTION
         
-        # Check if this is a method (function inside a class)
         parent_id = None
         curr = node.parent
         while curr:
@@ -100,7 +116,6 @@ class PythonParser(BaseParser):
                 if snippet_type == SnippetType.FUNCTION:
                     snippet_type = SnippetType.METHOD
                 
-                # Calculate parent class ID (hash of its content)
                 parent_content = code[curr.start_byte:curr.end_byte]
                 parent_id = hashlib.sha256(parent_content.encode("utf-8")).hexdigest()
                 break
@@ -108,9 +123,11 @@ class PythonParser(BaseParser):
 
         name_node = node.child_by_field_name("name")
         name = code[name_node.start_byte:name_node.end_byte] if name_node else "anonymous"
+        if chunk_index is not None:
+            name = f"{name}_chunk_{chunk_index}"
         
         params = ""
-        if snippet_type == SnippetType.FUNCTION:
+        if snippet_type in [SnippetType.FUNCTION, SnippetType.METHOD]:
             params_node = node.child_by_field_name("parameters")
             params = code[params_node.start_byte:params_node.end_byte] if params_node else "()"
 
@@ -136,12 +153,8 @@ class PythonParser(BaseParser):
             else:
                 docstring = leading_comment
 
-        snippet_content = code[node.start_byte:node.end_byte]
-        snippet_id = hashlib.sha256(snippet_content.encode("utf-8")).hexdigest()
-
         signature = f"{name}{params}" if snippet_type in [SnippetType.FUNCTION, SnippetType.METHOD] else name
 
-        # Store in metadata cache for future reuse (content-wise)
         self._metadata_cache[snippet_id] = {
             "name": name,
             "type": snippet_type,
@@ -162,5 +175,6 @@ class PythonParser(BaseParser):
             start_line=node.start_point[0],
             end_line=node.end_point[0],
             start_byte=node.start_byte,
-            end_byte=node.end_byte
+            end_byte=node.end_byte,
+            metadata={"chunk_index": chunk_index} if chunk_index is not None else {}
         )

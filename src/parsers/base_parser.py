@@ -3,12 +3,12 @@ from typing import List, Optional, Dict, Any
 from src.IR.models import CodeSnippet
 
 class BaseParser(ABC):
-    def __init__(self):
+    def __init__(self, chunk_size: int = 8000):
         self._tree_cache: Dict[str, Any] = {}
         self._snippet_cache: Dict[str, List[CodeSnippet]] = {}
         self._content_hash_cache: Dict[str, str] = {}
-        # Global cache mapping snippet content hash to extracted metadata
         self._metadata_cache: Dict[str, Dict[str, Any]] = {}
+        self.chunk_size = chunk_size
 
     @property
     @abstractmethod

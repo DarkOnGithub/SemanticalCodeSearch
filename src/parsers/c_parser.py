@@ -5,11 +5,14 @@ from src.parsers.base_parser import BaseParser
 from src.IR.models import CodeSnippet, SnippetType
 import hashlib
 
+from src.parsers.chunker import CodeChunker
+
 class CParser(BaseParser):
-    def __init__(self):
-        super().__init__()
+    def __init__(self, chunk_size: int = 1500):
+        super().__init__(chunk_size=chunk_size)
         self.language = Language(tsc.language())
         self.parser = Parser(self.language)
+        self.chunker = CodeChunker(language="c", max_chars=chunk_size)
 
     @property
     def language_id(self) -> str:
@@ -74,18 +77,31 @@ class CParser(BaseParser):
             if is_nested:
                 continue
 
-            snippet = self._extract_snippet(node, tag, code, file_path)
-            if snippet:
-                snippets.append(snippet)
-                processed_ranges.append((node.start_byte, node.end_byte))
+            extracted = self._extract_snippets(node, tag, code, file_path)
+            snippets.extend(extracted)
+            processed_ranges.append((node.start_byte, node.end_byte))
         
         if file_path:
             self.cache_snippets(file_path, snippets)
             
         return snippets
 
-    def _extract_snippet(self, node, tag, code, file_path) -> CodeSnippet:
+    def _extract_snippets(self, node, tag, code, file_path) -> List[CodeSnippet]:
         snippet_content = code[node.start_byte:node.end_byte]
+        
+        if len(snippet_content) <= self.chunk_size:
+            return [self._create_snippet(node, tag, code, file_path, snippet_content)]
+        
+        chunks = self.chunker.chunk(snippet_content)
+        
+        snippets = []
+        for i, chunk_content in enumerate(chunks):
+            snippet = self._create_snippet(node, tag, code, file_path, chunk_content, chunk_index=i)
+            snippets.append(snippet)
+        
+        return snippets
+
+    def _create_snippet(self, node, tag, code, file_path, snippet_content, chunk_index: Optional[int] = None) -> CodeSnippet:
         snippet_id = hashlib.sha256(snippet_content.encode("utf-8")).hexdigest()
 
         # Check metadata cache for this specific content
@@ -103,7 +119,8 @@ class CParser(BaseParser):
                 start_line=node.start_point[0],
                 end_line=node.end_point[0],
                 start_byte=node.start_byte,
-                end_byte=node.end_byte
+                end_byte=node.end_byte,
+                metadata={"chunk_index": chunk_index} if chunk_index is not None else {}
             )
 
         if tag == "function.def":
@@ -139,6 +156,9 @@ class CParser(BaseParser):
                 if name_node:
                     name = code[name_node.start_byte:name_node.end_byte]
 
+        if chunk_index is not None:
+            name = f"{name}_chunk_{chunk_index}"
+
         # Signature
         if snippet_type == SnippetType.FUNCTION:
             decl_node = node.child_by_field_name("declarator")
@@ -163,10 +183,6 @@ class CParser(BaseParser):
         
         docstring = "\n".join(reversed(comments)) if comments else None
 
-        snippet_content = code[node.start_byte:node.end_byte]
-        snippet_id = hashlib.sha256(snippet_content.encode("utf-8")).hexdigest()
-
-        # Store in metadata cache for future reuse
         self._metadata_cache[snippet_id] = {
             "name": name,
             "type": snippet_type,
@@ -186,5 +202,6 @@ class CParser(BaseParser):
             start_line=node.start_point[0],
             end_line=node.end_point[0],
             start_byte=node.start_byte,
-            end_byte=node.end_byte
+            end_byte=node.end_byte,
+            metadata={"chunk_index": chunk_index} if chunk_index is not None else {}
         )

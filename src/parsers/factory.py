@@ -8,11 +8,12 @@ from src.IR.models import CodeSnippet
 #!TODO use magika to detect the language of the file and return the appropriate parser
 
 class ParserFactory:
-    def __init__(self):
+    def __init__(self, chunk_size: int = 1500):
+        self.chunk_size = chunk_size
         self._parsers: Dict[str, BaseParser] = {
-            "py": PythonParser(),
-            "c": CParser(),
-            "h": CParser(),
+            "py": PythonParser(chunk_size=chunk_size),
+            "c": CParser(chunk_size=chunk_size),
+            "h": CParser(chunk_size=chunk_size),
         }
 
     def get_parser_for_extension(self, extension: str) -> Optional[BaseParser]:
