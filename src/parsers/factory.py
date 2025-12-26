@@ -5,7 +5,6 @@ from src.parsers.python_parser import PythonParser
 from src.parsers.c_parser import CParser
 from src.IR.models import CodeSnippet
 
-#!TODO use magika to detect the language of the file and return the appropriate parser
 
 class ParserFactory:
     def __init__(self, chunk_size: int = 1500):
