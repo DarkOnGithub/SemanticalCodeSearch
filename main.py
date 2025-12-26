@@ -2,7 +2,7 @@ from src.parsers.factory import ParserFactory
 import os
 import time
 
-CHUNK_SIZE = 8000
+CHUNK_SIZE = 100
 
 def main():
     factory = ParserFactory(chunk_size=CHUNK_SIZE)
@@ -27,8 +27,8 @@ def main():
         entity_name = chunked[0].name.split("_chunk_")[0]
         entity_chunks = [s for s in chunked if s.name.startswith(entity_name)]
         print(f"Total chunks for '{entity_name}': {len(entity_chunks)}")
-        for i, chunk in enumerate(entity_chunks):
-            print(f"Chunk {i+1}: {chunk.name} (Length: {len(chunk.content)})")
+        for chunk in entity_chunks:
+            print(f"Chunk: {chunk.name} (Length: {len(chunk.content)})")
             print(f"Content: {chunk.content}")
             print("-" * 50)
 

@@ -12,7 +12,7 @@ class CParser(BaseParser):
         super().__init__(chunk_size=chunk_size)
         self.language = Language(tsc.language())
         self.parser = Parser(self.language)
-        self.chunker = CodeChunker(language="c", max_chars=chunk_size)
+        self.chunker = CodeChunker(language="c", chunk_max_characters=chunk_size)
 
     @property
     def language_id(self) -> str:
@@ -92,11 +92,24 @@ class CParser(BaseParser):
         if len(snippet_content) <= self.chunk_size:
             return [self._create_snippet(node, tag, code, file_path, snippet_content)]
         
-        chunks = self.chunker.chunk(snippet_content)
+        nodes = self.chunker.chunk_to_nodes(snippet_content)
         
         snippets = []
-        for i, chunk_content in enumerate(chunks):
-            snippet = self._create_snippet(node, tag, code, file_path, chunk_content, chunk_index=i)
+        for i, text_node in enumerate(nodes):
+            display_name = None
+            if "inclusive_scopes" in text_node.metadata and text_node.metadata["inclusive_scopes"]:
+                scopes = text_node.metadata["inclusive_scopes"]
+                display_name = scopes[-1]["name"]
+
+            snippet = self._create_snippet(node, tag, code, file_path, text_node.get_content(), chunk_index=i)
+            
+            if display_name:
+                snippet.name = f"{display_name}_chunk_{i}"
+
+            snippet.metadata["llama_index_node_id"] = text_node.node_id
+            if text_node.parent_node:
+                snippet.metadata["llama_index_parent_id"] = text_node.parent_node.node_id
+                
             snippets.append(snippet)
         
         return snippets
@@ -104,7 +117,6 @@ class CParser(BaseParser):
     def _create_snippet(self, node, tag, code, file_path, snippet_content, chunk_index: Optional[int] = None) -> CodeSnippet:
         snippet_id = hashlib.sha256(snippet_content.encode("utf-8")).hexdigest()
 
-        # Check metadata cache for this specific content
         cached_meta = self._metadata_cache.get(snippet_id)
         if cached_meta:
             return CodeSnippet(

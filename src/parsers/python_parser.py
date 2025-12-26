@@ -13,7 +13,7 @@ class PythonParser(BaseParser):
         super().__init__(chunk_size=chunk_size)
         self.language = Language(tspython.language())
         self.parser = Parser(self.language)
-        self.chunker = CodeChunker(language="python", max_chars=chunk_size)
+        self.chunker = CodeChunker(language="python", chunk_max_characters=chunk_size)
 
     @property
     def language_id(self) -> str:
@@ -75,13 +75,24 @@ class PythonParser(BaseParser):
         if len(snippet_content) <= self.chunk_size:
             return [self._create_snippet(node, tag, code, file_path, snippet_content)]
         
-        # If too large, chunk it using LlamaIndex CodeSplitter
-        chunks = self.chunker.chunk(snippet_content)
+        nodes = self.chunker.chunk_to_nodes(snippet_content)
         
         snippets = []
-        for i, chunk_content in enumerate(chunks):
-            # Create a base snippet for the chunk
-            snippet = self._create_snippet(node, tag, code, file_path, chunk_content, chunk_index=i)
+        for i, text_node in enumerate(nodes):
+            display_name = None
+            if "inclusive_scopes" in text_node.metadata and text_node.metadata["inclusive_scopes"]:
+                scopes = text_node.metadata["inclusive_scopes"]
+                display_name = scopes[-1]["name"]
+            
+            snippet = self._create_snippet(node, tag, code, file_path, text_node.get_content(), chunk_index=i)
+            
+            if display_name:
+                snippet.name = f"{display_name}_chunk_{i}"
+            
+            snippet.metadata["llama_index_node_id"] = text_node.node_id
+            if text_node.parent_node:
+                snippet.metadata["llama_index_parent_id"] = text_node.parent_node.node_id
+            
             snippets.append(snippet)
         
         return snippets

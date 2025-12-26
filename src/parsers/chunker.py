@@ -1,16 +1,18 @@
 from typing import List
+from llama_index.core.schema import TextNode
 from llama_index.core.node_parser import CodeSplitter
+from llama_index.packs.code_hierarchy import CodeHierarchyNodeParser
 
 class CodeChunker:
-    def __init__(self, language: str, chunk_lines: int = 100, chunk_lines_overlap: int = 20, max_chars: int = 8000):
-        self.splitter = CodeSplitter(
-            language=language,
-            chunk_lines=chunk_lines,
-            chunk_lines_overlap=chunk_lines_overlap,
-            max_chars=max_chars,
+    def __init__(self, language: str, chunk_min_characters: int = 1000, chunk_max_characters: int = 8000):
+        target_language = "cpp" if language == "c" else language
+        
+        self.parser = CodeHierarchyNodeParser(
+            language=target_language,
+            chunk_min_characters=chunk_min_characters,
         )
 
-    def chunk(self, code: str) -> List[str]:
-        """Splits code into smaller chunks using LlamaIndex CodeSplitter."""
-        return self.splitter.split_text(code)
+    def chunk_to_nodes(self, code: str) -> List[TextNode]:
+        """Splits code into a hierarchy of nodes."""
+        return self.parser.get_nodes_from_documents([TextNode(text=code)])
 
