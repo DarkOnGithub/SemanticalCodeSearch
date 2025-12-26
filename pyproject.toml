@@ -1,0 +1,12 @@
+[project]
+name = "semanticalcodesearch"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "magika>=1.0.1",
+    "tree-sitter>=0.25.2",
+    "tree-sitter-c>=0.24.1",
+    "tree-sitter-python>=0.25.0",
+]
