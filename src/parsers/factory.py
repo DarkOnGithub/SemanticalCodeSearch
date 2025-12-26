@@ -44,7 +44,8 @@ class ParserFactory:
                         all_snippets.extend(snippets)
                     except Exception as e:
                         print(f"Error parsing {file_path}: {e}")
-            
+                else:
+                    print(f"No parser found for {file_path}")
             if not recursive:
                 break
                 

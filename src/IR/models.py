@@ -15,6 +15,7 @@ class CodeSnippet:
     name: str
     type: SnippetType
     content: str
+    parent_id: Optional[str] = None
     docstring: Optional[str] = None
     signature: Optional[str] = None
     file_path: Optional[str] = None

@@ -62,6 +62,20 @@ class PythonParser(BaseParser):
     def _extract_snippet(self, node, tag, code, file_path) -> CodeSnippet:
         snippet_type = SnippetType.CLASS if "class" in tag else SnippetType.FUNCTION
         
+        # Check if this is a method (function inside a class)
+        parent_id = None
+        curr = node.parent
+        while curr:
+            if curr.type == "class_definition":
+                if snippet_type == SnippetType.FUNCTION:
+                    snippet_type = SnippetType.METHOD
+                
+                # Calculate parent class ID (hash of its content)
+                parent_content = code[curr.start_byte:curr.end_byte]
+                parent_id = hashlib.sha256(parent_content.encode("utf-8")).hexdigest()
+                break
+            curr = curr.parent
+
         name_node = node.child_by_field_name("name")
         name = code[name_node.start_byte:name_node.end_byte] if name_node else "anonymous"
         
@@ -100,8 +114,9 @@ class PythonParser(BaseParser):
             name=name,
             type=snippet_type,
             content=snippet_content,
+            parent_id=parent_id,
             docstring=docstring if docstring else None,
-            signature=f"{name}{params}" if snippet_type == SnippetType.FUNCTION else name,
+            signature=f"{name}{params}" if snippet_type in [SnippetType.FUNCTION, SnippetType.METHOD] else name,
             file_path=file_path,
             start_line=node.start_point[0],
             end_line=node.end_point[0],
