@@ -1,4 +1,3 @@
-from src.IR.models import SnippetType
 from src.parsers.factory import ParserFactory
 import os
 import time
@@ -6,30 +5,34 @@ import time
 def main():
     factory = ParserFactory()
     
-    src_path = "/home/user/Downloads/WordSearchOCR-master/"
+    # Path to the src directory in the project
+    project_root = os.path.abspath(os.path.dirname(__file__))
+    src_path = os.path.join(project_root, "src")
     
-    print(f"--- Benchmarking ParserFactory.parse_directory ---")
-    print(f"Target: {src_path}")
+    print(f"--- Benchmarking Caching Performance ---")
     
-    start_time = time.perf_counter()
-    all_snippets = factory.parse_directory(src_path, recursive=True)
-    end_time = time.perf_counter()
+    # Run 1: Cold start (no cache)
+    print("\nRun 1: Cold Start (Parsing from disk)...")
+    start1 = time.perf_counter()
+    all_snippets1 = factory.parse_directory(src_path, recursive=True)
+    end1 = time.perf_counter()
+    print(f"Time: {end1 - start1:.4f}s | Snippets: {len(all_snippets1)}")
+    os.remove("./src/test.py")
+    with open("./src/test.py", "w") as f:
+        f.write("""
+def test():
+    print("Hello, World!")
+        """)
+    # Run 2: Hot start (from cache)
+    print("\nRun 2: Hot Start (Identical content, should skip parsing)...")
+    start2 = time.perf_counter()
+    all_snippets2 = factory.parse_directory(src_path, recursive=True)
+    end2 = time.perf_counter()
     
-    duration = end_time - start_time
+    print(f"Time: {end2 - start2:.4f}s | Snippets: {len(all_snippets2)}")
     
-    
-    print(f"\nBenchmark Results:")
-    print(f"Total Snippets Extracted: {len(all_snippets)}")
-    print(f"Total Time Taken:         {duration:.4f} seconds")
-    
-    if all_snippets:
-        avg_time = duration / len(all_snippets)
-        print(f"Average Time per Snippet: {avg_time:.6f} seconds")
-        files = set()
-        for s in all_snippets:
-            files.add(s.file_path)
-            if s.type == SnippetType.STRUCT:
-                print(s)
-        # print("\n".join(files))
+    improvement = (end1 - start1) / (end2 - start2)
+    print(f"\nSpeedup: {improvement:.1f}x faster!")
+
 if __name__ == "__main__":
     main()

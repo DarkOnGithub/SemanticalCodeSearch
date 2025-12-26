@@ -33,6 +33,11 @@ class CParser(BaseParser):
         """
 
     def parse_file(self, code: str, file_path: Optional[str] = None) -> List[CodeSnippet]:
+        if file_path:
+            cached = self.get_cached_snippets(file_path, code)
+            if cached is not None:
+                return cached
+
         old_tree = self._tree_cache.get(file_path) if file_path else None
         
         if old_tree:
@@ -74,9 +79,33 @@ class CParser(BaseParser):
                 snippets.append(snippet)
                 processed_ranges.append((node.start_byte, node.end_byte))
         
+        if file_path:
+            self.cache_snippets(file_path, snippets)
+            
         return snippets
 
     def _extract_snippet(self, node, tag, code, file_path) -> CodeSnippet:
+        snippet_content = code[node.start_byte:node.end_byte]
+        snippet_id = hashlib.sha256(snippet_content.encode("utf-8")).hexdigest()
+
+        # Check metadata cache for this specific content
+        cached_meta = self._metadata_cache.get(snippet_id)
+        if cached_meta:
+            return CodeSnippet(
+                id=snippet_id,
+                name=cached_meta["name"],
+                type=cached_meta["type"],
+                content=snippet_content,
+                parent_id=None,
+                docstring=cached_meta["docstring"],
+                signature=cached_meta["signature"],
+                file_path=file_path,
+                start_line=node.start_point[0],
+                end_line=node.end_point[0],
+                start_byte=node.start_byte,
+                end_byte=node.end_byte
+            )
+
         if tag == "function.def":
             snippet_type = SnippetType.FUNCTION
         else:
@@ -136,6 +165,14 @@ class CParser(BaseParser):
 
         snippet_content = code[node.start_byte:node.end_byte]
         snippet_id = hashlib.sha256(snippet_content.encode("utf-8")).hexdigest()
+
+        # Store in metadata cache for future reuse
+        self._metadata_cache[snippet_id] = {
+            "name": name,
+            "type": snippet_type,
+            "docstring": docstring,
+            "signature": signature
+        }
 
         return CodeSnippet(
             id=snippet_id,

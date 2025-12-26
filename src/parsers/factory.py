@@ -27,25 +27,43 @@ class ParserFactory:
         extension = file_path.split(".")[-1]
         return self.get_parser_for_extension(extension)
 
-    def parse_directory(self, directory_path: str, recursive: bool = False) -> List[CodeSnippet]:
+    def parse_directory(
+        self, 
+        directory_path: str, 
+        recursive: bool = False,
+        ignore_dirs: Optional[List[str]] = None,
+        ignore_exts: Optional[List[str]] = None
+    ) -> List[CodeSnippet]:
         """Parses all supported files in a directory"""
         all_snippets = []
         
+        default_ignore_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv"}
+        default_ignore_exts = {".pyc", ".pyo", ".so", ".dll", ".exe", ".bin"}
+            
+        ignore_dirs_set = default_ignore_dirs.union(set(ignore_dirs)) if ignore_dirs else default_ignore_dirs
+        ignore_exts_set = default_ignore_exts.union(set(ignore_exts)) if ignore_exts else default_ignore_exts
+
         for root, dirs, files in os.walk(directory_path):
+            dirs[:] = [d for d in dirs if d not in ignore_dirs_set]
+            
             for file in files:
                 file_path = os.path.join(root, file)
+                extension = f".{file.split('.')[-1]}" if "." in file else ""
+                
+                if extension in ignore_exts_set:
+                    continue
+                    
                 parser = self.get_parser_for_file(file_path)
                 
                 if parser:
                     try:
-                        with open(file_path, 'r', encoding='utf-8') as f:
+                        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                             content = f.read()
                         snippets = parser.parse_file(content, file_path)
                         all_snippets.extend(snippets)
                     except Exception as e:
                         print(f"Error parsing {file_path}: {e}")
-                else:
-                    print(f"No parser found for {file_path}")
+            
             if not recursive:
                 break
                 
