@@ -28,13 +28,10 @@ def main():
     parser.add_argument("--port", type=int, default=5000, help="Port for the web server")
     args = parser.parse_args()
 
-    # Determine if we should launch Web Server
-    # Launch Web if explicitly requested OR if no query/indexing command is implied
     should_launch_web = args.web or (not args.query and len(os.sys.argv) <= 2)
 
     setup_logging(args.verbose)
     
-    # 1. Create an indexer instance for this specific folder
     indexer = ProjectIndexer(
         src_path=args.dir, 
         chunk_size=args.chunk_size,

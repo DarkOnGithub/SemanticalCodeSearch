@@ -1,6 +1,7 @@
 import logging
 import time
 from typing import List, Dict, Any, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
 from src.indexer import ProjectIndexer
 from src.model.orchestrator import Orchestrator
 from src.model.reranker import get_reranker
@@ -37,24 +38,54 @@ class SearchManager:
     def search(self, query: str, n_results: int = 5) -> Dict[str, Any]:
         """
         Performs a hybrid search (Semantic + Keyword) with RRF fusion and Re-ranking.
+        Uses parallel execution to speed up the pipeline.
         """
         start_time = time.time()
         if not self.chroma or not self.embedding_model:
             logger.error("Search components not initialized.")
             return {"results": [], "final_query": query, "hyde_used": False}
 
-        # 1. Orchestration (HyDE)
-        final_query, hyde_used = self._orchestrate_query(query)
-
-        # 2. Retrieval (Vector + Keyword)
-        initial_n = max(n_results * 10, 100)
-        vector_results, keyword_results = self._retrieve_candidates(query, final_query, hyde_used, initial_n)
+        to_rerank_count = max(n_results * 10, 100)
+        
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            hyde_future = executor.submit(self._orchestrate_query, query)
+            keyword_future = executor.submit(self.sqlite.search_by_content, query, limit=to_rerank_count) if self.sqlite else None
+            
+            final_query, hyde_used = hyde_future.result()
+            
+            vector_future = executor.submit(self._retrieve_vector_candidates, final_query, to_rerank_count)
+            hyde_keyword_future = None
+            if hyde_used and self.sqlite:
+                hyde_keyword_future = executor.submit(self.sqlite.search_by_content, final_query, limit=to_rerank_count)
+            
+            vector_results = vector_future.result()
+            
+            keyword_results_list = []
+            seen_ids = set()
+            
+            if keyword_future:
+                for s in keyword_future.result():
+                    if s.id not in seen_ids:
+                        keyword_results_list.append({
+                            "id": s.id, 
+                            "document": s.to_embeddable_text(use_summary=True)
+                        })
+                        seen_ids.add(s.id)
+            
+            if hyde_keyword_future:
+                for s in hyde_keyword_future.result():
+                    if s.id not in seen_ids:
+                        keyword_results_list.append({
+                            "id": s.id, 
+                            "document": s.to_embeddable_text(use_summary=True)
+                        })
+                        seen_ids.add(s.id)
 
         # 3. Fusion (Reciprocal Rank Fusion)
-        sorted_ids = self._fuse_results(vector_results, keyword_results)
+        sorted_ids = self._fuse_results(vector_results, keyword_results_list)
         
         # 4. Hydration & Re-ranking
-        final_results = self._hydrate_and_rerank(sorted_ids[:initial_n], vector_results, keyword_results, query, n_results)
+        final_results = self._hydrate_and_rerank(sorted_ids[:to_rerank_count], vector_results, keyword_results_list, query, n_results)
 
         logger.info(f"Hybrid Search complete in {time.time() - start_time:.2f}s")
         return {
@@ -99,12 +130,15 @@ class SearchManager:
         final_query = self.orchestrator.process_query(query)
         return final_query, (final_query != query)
 
-    def _retrieve_candidates(self, original_query: str, final_query: str, hyde_used: bool, limit: int) -> Tuple[List[Dict], List[Dict]]:
-        # Vector Search
+    def _retrieve_vector_candidates(self, final_query: str, limit: int) -> List[Dict]:
+        """Helper for parallel vector retrieval."""
         query_embedding = self.embedding_model.embed_text(final_query)
-        vector_results = self.chroma.query(query_embedding, n_results=limit)
+        return self.chroma.query(query_embedding, n_results=limit)
+
+    def _retrieve_candidates(self, original_query: str, final_query: str, hyde_used: bool, limit: int) -> Tuple[List[Dict], List[Dict]]:
+        # Legacy method for compatibility
+        vector_results = self._retrieve_vector_candidates(final_query, limit)
         
-        # Keyword Search
         keyword_results = []
         if self.sqlite:
             search_queries = [original_query]
@@ -121,9 +155,6 @@ class SearchManager:
                             "document": s.to_embeddable_text(use_summary=True)
                         })
                         seen_ids.add(s.id)
-                if len(keyword_results) >= limit:
-                    break
-                    
         return vector_results, keyword_results
 
     def _fuse_results(self, vector_results: List[Dict], keyword_results: List[Dict], k: int = 60) -> List[str]:
@@ -141,10 +172,14 @@ class SearchManager:
     def _hydrate_and_rerank(self, top_ids: List[str], vector_res: List[Dict], keyword_res: List[Dict], query: str, final_k: int) -> List[Dict]:
         candidates = []
         
-        # Hydrate snippet objects
+        # 1. Bulk hydrate snippet objects
+        if not self.sqlite:
+            return []
+            
+        snippet_map = self.sqlite.get_snippets(top_ids)
+        
         for sid in top_ids:
-            if not self.sqlite: continue
-            snippet = self.sqlite.get_snippet(sid)
+            snippet = snippet_map.get(sid)
             if not snippet: continue
 
             # Find the best available document text for reranking
@@ -160,7 +195,7 @@ class SearchManager:
                 "document": doc_text
             })
 
-        # Re-rank
+        # 2. Re-rank
         if self.reranker and candidates:
             logger.info(f"Reranking {len(candidates)} candidates...")
             docs = [c["document"] for c in candidates]
@@ -176,11 +211,17 @@ class SearchManager:
         else:
             candidates = candidates[:final_k]
 
-        # Add Parents & Relations
+        # 3. Bulk hydrate Parents & fetch Relations
         results = []
+        parent_ids = list(set(c["snippet"].parent_id for c in candidates if c["snippet"].parent_id))
+        parent_map = self.sqlite.get_snippets(parent_ids) if parent_ids else {}
+
         for c in candidates:
             snippet = c["snippet"]
-            parent = self.sqlite.get_snippet(snippet.parent_id) if snippet.parent_id else None
+            parent = parent_map.get(snippet.parent_id) if snippet.parent_id else None
+            
+            # Relations are still fetched per-snippet as they are usually few, 
+            # but we could bulk fetch if needed.
             relations = self.graph_db.get_snippet_relationships(snippet.id) if self.graph_db else []
             
             results.append({

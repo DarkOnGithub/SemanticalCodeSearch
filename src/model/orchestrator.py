@@ -94,11 +94,11 @@ Query: {query}
 
 Benefit from HyDE?"""
 
-HYDE_GENERATION_PROMPT = """You are an expert developer. Based on the user's query, generate a small, hypothetical code snippet in Python or C that might exist in a codebase to answer this query. This snippet will be used to improve semantic search.
+HYDE_GENERATION_PROMPT = """Generate ONLY a concise, hypothetical code snippet that directly addresses the user's query. 
+NO markdown code blocks, NO explanations, ONLY the raw code.
 
 Query: {query}
-
-Hypothetical Code Snippet:"""
+Code:"""
 
 class Orchestrator:
     def __init__(self):
@@ -116,14 +116,15 @@ class Orchestrator:
         logger.info(f"Orchestrating query: {query}")
         
         decision_prompt = HYDE_DECISION_PROMPT.format(query=query)
-        decision = self.llm.complete(decision_prompt, max_new_tokens=10).upper()
+        decision = self.llm.complete(decision_prompt, max_new_tokens=5).upper() # Reduced tokens for decision
         
         logger.info(f"HyDE decision: {decision}")
         
         if "YES" in decision:
             logger.info("Generating hypothetical code (HyDE)...")
             gen_prompt = HYDE_GENERATION_PROMPT.format(query=query)
-            fake_code = self.llm.complete(gen_prompt, max_new_tokens=256)
+            # Reduced tokens for generation and added more direct instructions
+            fake_code = self.llm.complete(gen_prompt, max_new_tokens=128) 
             
             augmented_query = f"{query}\n\nHypothetical code implementation:\n{fake_code}"
             logger.debug(f"Augmented query: {augmented_query}")

@@ -3,7 +3,7 @@ import sqlite3
 import json
 import logging
 import re
-from typing import List, Optional, Dict, Any, Union
+from typing import List, Optional, Dict
 
 from src.IR.models import CodeSnippet, SnippetType
 
@@ -236,6 +236,19 @@ class SQLiteStorage:
             row = cursor.fetchone()
             return self._row_to_snippet(row) if row else None
 
+    def get_snippets(self, snippet_ids: List[str]) -> Dict[str, CodeSnippet]:
+        """Bulk fetch snippets by ID."""
+        if not snippet_ids:
+            return {}
+        
+        placeholders = ",".join(["?"] * len(snippet_ids))
+        query = f"SELECT * FROM snippets WHERE id IN ({placeholders})"
+        
+        with self._get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, snippet_ids)
+            return {row["id"]: self._row_to_snippet(row) for row in cursor.fetchall()}
+
     def search_by_content(self, query: str, limit: int = 50) -> List[CodeSnippet]:
         """
         Multi-stage search strategy:
@@ -257,7 +270,8 @@ class SQLiteStorage:
             cursor = conn.cursor()
 
             for term in tech_terms:
-                if len(term) < 3: continue
+                if len(term) < 3:
+                    continue
                 # We use a fake rank of -100.0 to push these to the top if we were sorting later
                 cursor.execute("SELECT *, -100.0 as rank FROM snippets WHERE name = ? LIMIT ?", (term, limit))
                 for r in cursor.fetchall():

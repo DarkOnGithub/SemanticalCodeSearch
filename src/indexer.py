@@ -153,7 +153,7 @@ class ProjectIndexer:
 
         embed_thread = threading.Thread(
             target=self._run_embedding_worker, 
-            args=(embed_batch_size,), 
+            args=(embed_batch_size, None), # pbar will be updated in _process_embeddings if needed
             daemon=True
         )
         embed_thread.start()
@@ -308,7 +308,8 @@ class ProjectIndexer:
 
     def cleanup(self, current_snippets: List[CodeSnippet]):
         """Removes data for files that no longer exist on disk."""
-        if not self.sqlite: return
+        if not self.sqlite:
+            return
 
         logger.info("Starting cleanup pass...")
         current_files = {s.file_path for s in current_snippets if s.file_path}
@@ -324,7 +325,8 @@ class ProjectIndexer:
 
     def verify(self):
         """Prints a summary of the current project state in storage."""
-        if not self.graph_db: return
+        if not self.graph_db:
+            return
         
         nodes = self.graph_db.get_all_nodes()
         placeholders = sum(1 for n in nodes if n.type == SnippetType.PLACEHOLDER)
@@ -354,7 +356,7 @@ class ProjectIndexer:
     def _propagate_context(self, snippets: List[CodeSnippet], id_map: Dict[str, CodeSnippet]):
         """Propagates summaries top-down (File -> Class -> Method)."""
         logger.info("Propagating summaries top-down...")
-        for _ in range(3): # Sufficient depth for standard code nesting
+        for _ in range(3):
             for s in snippets:
                 if s.parent_id and s.parent_id in id_map:
                     parent = id_map[s.parent_id]
@@ -363,31 +365,41 @@ class ProjectIndexer:
 
     def _process_embeddings(self, snippets: List[CodeSnippet], batch_size: int, thread_started: bool = False, thread_obj: Optional[threading.Thread] = None):
         """Orchestrates the background embedding worker."""
-        if not thread_started:
-            thread_obj = threading.Thread(target=self._run_embedding_worker, args=(batch_size,), daemon=True)
-            thread_obj.start()
-
         pbar = tqdm(total=len(snippets), desc="Pipelining Embeddings", unit="snippet")
+        
+        if not thread_started:
+            thread_obj = threading.Thread(target=self._run_embedding_worker, args=(batch_size, pbar), daemon=True)
+            thread_obj.start()
+        else:
+            pass
+
         for s in snippets:
             self._embedding_queue.put(s)
-            pbar.update(0) # Keep pbar alive
+            if thread_started:
+                pbar.update(0.1) 
         
-        self._embedding_queue.put(None) # Sentinel
+        self._embedding_queue.put(None) 
         if thread_obj:
             thread_obj.join()
+        
+        if pbar.n < pbar.total:
+            pbar.update(pbar.total - pbar.n)
         pbar.close()
 
-    def _run_embedding_worker(self, batch_size: int):
+    def _run_embedding_worker(self, batch_size: int, pbar: Optional[tqdm] = None):
         """Consumer loop for the embedding queue."""
         while True:
             batch = self._collect_batch(batch_size)
-            if not batch: break
+            if not batch:
+                break
             
             try:
-                # use_summary=True default assumed for context
                 embeddings = self.embedding_model.embed_snippets(batch, batch_size=len(batch))
                 for s, emb in zip(batch, embeddings):
                     self._embedding_cache[s.id] = emb
+                
+                if pbar is not None:
+                    pbar.update(len(batch))
             except Exception as e:
                 logger.error(f"Embedding pipeline error: {e}")
             finally:
@@ -399,7 +411,8 @@ class ProjectIndexer:
         batch = []
         try:
             item = self._embedding_queue.get()
-            if item is None: return [] # Sentinel received
+            if item is None:
+                return [] # Sentinel received
             batch.append(item)
             
             while len(batch) < size:

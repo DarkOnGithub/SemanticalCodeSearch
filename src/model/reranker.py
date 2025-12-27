@@ -47,7 +47,7 @@ class JinaReranker:
             logger.error(f"Failed to load Jina Reranker: {e}")
             raise
 
-    def rerank(self, query: str, documents: List[str], top_n: int = 5, batch_size: int = 4) -> List[Dict[str, Any]]:
+    def rerank(self, query: str, documents: List[str], top_n: int = 5, batch_size: int = 16) -> List[Dict[str, Any]]:
         """
         Reranks a list of documents based on a query using small batches to avoid OOM.
         Returns a list of dictionaries with index and score, sorted by score descending.
@@ -61,13 +61,13 @@ class JinaReranker:
             clean_docs = [str(doc) if doc is not None else "" for doc in documents]
             all_scores = []
             
-            # Process in small batches to avoid OOM
+            # Process in batches
             for i in range(0, len(clean_docs), batch_size):
                 batch_docs = clean_docs[i:i + batch_size]
                 pairs = [[query, doc] for doc in batch_docs]
                 
                 batch_scores = None
-                with torch.no_grad():
+                with torch.inference_mode():
                     # Try the model's built-in compute_score first
                     if hasattr(self.model, 'compute_score'):
                         try:
@@ -108,9 +108,6 @@ class JinaReranker:
                 
                 all_scores.extend(batch_scores)
                 
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-
             results = [
                 {"index": i, "score": float(score)}
                 for i, score in enumerate(all_scores)
