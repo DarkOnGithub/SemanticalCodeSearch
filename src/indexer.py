@@ -3,14 +3,16 @@ import hashlib
 import logging
 import threading
 from dataclasses import dataclass
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
 from src.parsers.factory import ParserFactory
 from src.storage.sqlite_storage import SQLiteStorage
 from src.storage.falkordb_storage import FalkorDBStorage
+from src.storage.chroma_storage import ChromaStorage
 from src.graph.manager import GraphManager
 from src.IR.models import CodeSnippet, Relationship, SnippetType
 from src.model.LLM import get_llm
+from src.model.embedding import get_embedding_model
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +35,13 @@ class ProjectIndexer:
         
         self.context = self._create_context(self.src_path)
         self.llm = get_llm()
+        self.embedding_model = get_embedding_model()
         self.factory = ParserFactory(chunk_size=chunk_size, llm=self.llm)
         self.graph_manager = GraphManager(self.factory)
         
         self.sqlite: Optional[SQLiteStorage] = None
         self.graph_db: Optional[FalkorDBStorage] = None
+        self.chroma: Optional[ChromaStorage] = None
         self.changed_files: set[str] = set()
         self.all_encountered_files: Dict[str, str] = {}
 
@@ -63,6 +67,10 @@ class ProjectIndexer:
         self.graph_db = FalkorDBStorage(
             db_path=os.path.join(self.context.data_dir, "graph.db"),
             graph_name=self.context.project_id
+        )
+        self.chroma = ChromaStorage(
+            path=os.path.join(self.context.data_dir, "chroma"),
+            collection_name=self.context.project_id
         )
 
     def extract_snippets(self) -> List[CodeSnippet]:
@@ -231,23 +239,39 @@ class ProjectIndexer:
         logger.info(f"Successfully extracted {len(relationships)} relationships")
         return relationships
 
-    def save(self, snippets: List[CodeSnippet], relationships: List[Relationship]):
+    def embed_snippets(self, snippets: List[CodeSnippet], batch_size: int = 8, use_summary: bool = True) -> List[Optional[Any]]:
+        """Pass 4: Generates semantic embeddings for snippets."""
+        if not self.embedding_model:
+            logger.warning("Embedding model not initialized, skipping embedding")
+            return [None] * len(snippets)
+
+        logger.info(f"Pass 4: Generating embeddings for {len(snippets)} snippets (batch_size={batch_size}, use_summary={use_summary})")
+        
+        embeddings = self.embedding_model.embed_snippets(snippets, batch_size=batch_size, use_summary=use_summary)
+        logger.info(f"Successfully generated {len(embeddings)} embeddings")
+        return embeddings
+
+    def save(self, snippets: List[CodeSnippet], relationships: List[Relationship], embeddings: Optional[List[Any]] = None):
         """Persists extracted data to both relational and graph storage."""
-        if not self.sqlite or not self.graph_db:
+        if not self.sqlite or not self.graph_db or not self.chroma:
             logger.error("Attempted to save before storage initialization")
             raise RuntimeError("Storage not initialized. Call initialize_storage() first.")
             
-        logger.info("Saving data to SQLite and FalkorDB...")
+        logger.info("Saving data to SQLite, FalkorDB, and ChromaDB...")
         
         # For changed files, delete old data first to ensure clean state (especially for relationships)
         for file_path in self.changed_files:
             logger.info(f"Updating changed file: {file_path}")
             self.sqlite.delete_file_snippets(file_path)
             self.graph_db.delete_file_data(file_path)
+            self.chroma.delete_file_snippets(file_path)
 
         self.sqlite.save_snippets(snippets)
         self.graph_db.save_snippets(snippets)
         self.graph_db.save_relationships(relationships)
+        
+        if embeddings:
+            self.chroma.save_snippets(snippets, embeddings)
         
         # Save file hashes for ALL encountered files, even those with 0 snippets
         for file_path, content_hash in self.all_encountered_files.items():
@@ -257,7 +281,7 @@ class ProjectIndexer:
 
     def cleanup(self, current_snippets: List[CodeSnippet]):
         """Removes data for files that no longer exist on disk."""
-        if not self.sqlite or not self.graph_db:
+        if not self.sqlite or not self.graph_db or not self.chroma:
             logger.warning("Cleanup skipped: storage not initialized")
             return
 
@@ -275,6 +299,12 @@ class ProjectIndexer:
         for f in (old_graph - current_files):
             logger.info(f"Removing deleted file from FalkorDB: {f}")
             self.graph_db.delete_file_data(f)
+
+        # ChromaDB Cleanup
+        old_chroma = set(self.chroma.get_all_file_paths())
+        for f in (old_chroma - current_files):
+            logger.info(f"Removing deleted file from ChromaDB: {f}")
+            self.chroma.delete_file_snippets(f)
         
         logger.info("Cleanup completed")
 

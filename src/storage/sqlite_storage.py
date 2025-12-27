@@ -151,6 +151,32 @@ class SQLiteStorage:
                 ))
         return snippets
 
+    def get_snippet(self, snippet_id: str) -> Optional[CodeSnippet]:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM snippets WHERE id = ?", (snippet_id,))
+            row = cursor.fetchone()
+            if row:
+                return CodeSnippet(
+                    id=row["id"],
+                    name=row["name"],
+                    type=SnippetType(row["type"]),
+                    content=row["content"],
+                    summary=row["summary"],
+                    parent_id=row["parent_id"],
+                    docstring=row["docstring"],
+                    signature=row["signature"],
+                    file_path=row["file_path"],
+                    start_line=row["start_line"],
+                    end_line=row["end_line"],
+                    start_byte=row["start_byte"],
+                    end_byte=row["end_byte"],
+                    is_skeleton=bool(row["is_skeleton"]),
+                    metadata=json.loads(row["metadata_json"])
+                )
+        return None
+
     def search_by_name(self, name_query: str) -> List[CodeSnippet]:
         snippets = []
         with sqlite3.connect(self.db_path) as conn:

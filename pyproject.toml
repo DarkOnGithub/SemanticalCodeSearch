@@ -20,4 +20,10 @@ dependencies = [
     "tree-sitter-c>=0.24.1",
     "tree-sitter-language-pack>=0.13.0",
     "tree-sitter-python>=0.25.0",
+    "torch>=2.2.0",
+    "sentence-transformers>=3.0.0",
+    "bitsandbytes",
+    "accelerate",
+    "einops",
+    "chromadb>=1.4.0",
 ]

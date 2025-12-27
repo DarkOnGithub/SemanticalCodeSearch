@@ -83,11 +83,14 @@ class DeepSeekLLM:
             current_model = "deepseek-reasoner" if THINKING else self.model_name
             
             # Prepare arguments
+            system_content = "You are a helpful assistant."
+            if json_mode:
+                system_content += " Always output valid JSON."
+                
             kwargs = {
                 "model": current_model,
                 "messages": [
-                    # System prompt helps enforce JSON mode for DeepSeek
-                    {"role": "system", "content": "You are a helpful assistant. Always output valid JSON when requested."}, 
+                    {"role": "system", "content": system_content}, 
                     {"role": "user", "content": prompt}
                 ],
                 "max_tokens": self.max_output_tokens,
