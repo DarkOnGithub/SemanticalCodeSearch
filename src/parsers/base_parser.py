@@ -1,6 +1,9 @@
 from abc import ABC, abstractmethod
+import logging
 from typing import List, Optional, Dict, Any
 from src.IR.models import CodeSnippet
+
+logger = logging.getLogger(__name__)
 
 class BaseParser(ABC):
     def __init__(self, chunk_size: int = 8000):

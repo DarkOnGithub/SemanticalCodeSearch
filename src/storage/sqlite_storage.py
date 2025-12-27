@@ -1,8 +1,11 @@
 import os
 import sqlite3
 import json
+import logging
 from typing import List
 from src.IR.models import CodeSnippet, SnippetType
+
+logger = logging.getLogger(__name__)
 
 class SQLiteStorage:
     def __init__(self, db_path: str = "data/codebase.db"):

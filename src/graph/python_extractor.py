@@ -1,8 +1,11 @@
+import logging
 from typing import List
 from tree_sitter import Query, QueryCursor
 from src.graph.base_extractor import BaseRelationshipExtractor
 from src.IR.models import Relationship, RelationType
 import hashlib
+
+logger = logging.getLogger(__name__)
 
 class PythonRelationshipExtractor(BaseRelationshipExtractor):
     def get_query(self) -> str:

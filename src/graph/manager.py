@@ -1,10 +1,13 @@
+import hashlib
+import os
+import logging
 from typing import List, Dict
 from src.IR.models import CodeSnippet, Relationship, SnippetType
 from src.parsers.factory import ParserFactory
 from src.graph.python_extractor import PythonRelationshipExtractor
 from src.graph.c_extractor import CRelationshipExtractor
-import hashlib
-import os
+
+logger = logging.getLogger(__name__)
 
 class GraphManager:
     def __init__(self, parser_factory: ParserFactory):

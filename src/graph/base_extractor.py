@@ -1,7 +1,10 @@
 from abc import ABC, abstractmethod
+import logging
 from typing import List, Dict, Any, Optional
 from src.IR.models import CodeSnippet, Relationship
 from tree_sitter import Node, Tree
+
+logger = logging.getLogger(__name__)
 
 class BaseRelationshipExtractor(ABC):
     def __init__(self, code: str, tree: Tree, file_path: str, snippets: List[CodeSnippet], symbol_table: Dict[str, str] = None):

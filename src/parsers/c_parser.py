@@ -1,4 +1,5 @@
 import tree_sitter_c as tsc
+import logging
 from tree_sitter import Language, Parser, Query, QueryCursor
 from typing import List, Optional
 from src.parsers.base_parser import BaseParser
@@ -6,6 +7,8 @@ from src.IR.models import CodeSnippet, SnippetType
 import hashlib
 
 from src.parsers.chunker import CodeChunker
+
+logger = logging.getLogger(__name__)
 
 class CParser(BaseParser):
     def __init__(self, chunk_size: int = 1500):

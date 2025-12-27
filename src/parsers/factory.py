@@ -1,10 +1,12 @@
 import os
+import logging
 from typing import Dict, Optional, List
 from src.parsers.base_parser import BaseParser
 from src.parsers.python_parser import PythonParser
 from src.parsers.c_parser import CParser
 from src.IR.models import CodeSnippet
 
+logger = logging.getLogger(__name__)
 
 class ParserFactory:
     def __init__(self, chunk_size: int = 1500):
@@ -62,7 +64,7 @@ class ParserFactory:
                         snippets = parser.parse_file(content, file_path)
                         all_snippets.extend(snippets)
                     except Exception as e:
-                        print(f"Error parsing {file_path}: {e}")
+                        logger.error(f"Error parsing {file_path}: {e}")
             
             if not recursive:
                 break

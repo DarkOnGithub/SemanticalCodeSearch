@@ -1,7 +1,9 @@
+import logging
 from typing import List
 from llama_index.core.schema import TextNode
-from llama_index.core.node_parser import CodeSplitter
 from llama_index.packs.code_hierarchy import CodeHierarchyNodeParser
+
+logger = logging.getLogger(__name__)
 
 class CodeChunker:
     def __init__(self, language: str, chunk_min_characters: int = 1000, chunk_max_characters: int = 8000):
