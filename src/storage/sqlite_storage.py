@@ -22,6 +22,7 @@ class SQLiteStorage:
                     name TEXT,
                     type TEXT,
                     content TEXT,
+                    summary TEXT,
                     parent_id TEXT,
                     docstring TEXT,
                     signature TEXT,
@@ -41,14 +42,15 @@ class SQLiteStorage:
             for s in snippets:
                 cursor.execute("""
                     INSERT OR REPLACE INTO snippets (
-                        id, name, type, content, parent_id, docstring, signature, 
+                        id, name, type, content, summary, parent_id, docstring, signature, 
                         file_path, start_line, end_line, start_byte, end_byte, metadata_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     s.id,
                     s.name,
                     s.type.value,
                     s.content,
+                    s.summary,
                     s.parent_id,
                     s.docstring,
                     s.signature,
@@ -86,6 +88,7 @@ class SQLiteStorage:
                     name=row["name"],
                     type=SnippetType(row["type"]),
                     content=row["content"],
+                    summary=row["summary"],
                     parent_id=row["parent_id"],
                     docstring=row["docstring"],
                     signature=row["signature"],
@@ -111,6 +114,7 @@ class SQLiteStorage:
                     name=row["name"],
                     type=SnippetType(row["type"]),
                     content=row["content"],
+                    summary=row["summary"],
                     parent_id=row["parent_id"],
                     docstring=row["docstring"],
                     signature=row["signature"],

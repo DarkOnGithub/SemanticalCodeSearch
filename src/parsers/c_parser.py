@@ -1,7 +1,7 @@
 import tree_sitter_c as tsc
 import logging
 from tree_sitter import Language, Parser, Query, QueryCursor
-from typing import List, Optional
+from typing import List, Optional, Any
 from src.parsers.base_parser import BaseParser
 from src.IR.models import CodeSnippet, SnippetType
 import hashlib
@@ -11,8 +11,8 @@ from src.parsers.chunker import CodeChunker
 logger = logging.getLogger(__name__)
 
 class CParser(BaseParser):
-    def __init__(self, chunk_size: int = 1500):
-        super().__init__(chunk_size=chunk_size)
+    def __init__(self, chunk_size: int = 1500, llm: Optional[Any] = None):
+        super().__init__(chunk_size=chunk_size, llm=llm)
         self.language = Language(tsc.language())
         self.parser = Parser(self.language)
         self.chunker = CodeChunker(language="c", chunk_max_characters=chunk_size)
@@ -94,8 +94,12 @@ class CParser(BaseParser):
         snippet_content = code[node.start_byte:node.end_byte]
         
         if len(snippet_content) <= self.chunk_size:
-            return [self._create_snippet(node, tag, code, file_path, snippet_content)]
+            snippet = self._create_snippet(node, tag, code, file_path, snippet_content)
+            if self.llm:
+                self.llm.summarize_snippet(snippet)
+            return [snippet]
         
+        # If chunking, summarize each chunk individually
         nodes = self.chunker.chunk_to_nodes(snippet_content)
         
         snippets = []
@@ -106,6 +110,9 @@ class CParser(BaseParser):
                 display_name = scopes[-1]["name"]
 
             snippet = self._create_snippet(node, tag, code, file_path, text_node.get_content(), chunk_index=i)
+            
+            if self.llm:
+                self.llm.summarize_snippet(snippet)
             
             if display_name:
                 snippet.name = f"{display_name}_chunk_{i}"

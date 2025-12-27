@@ -5,9 +5,10 @@ from dataclasses import dataclass
 from typing import List, Optional
 from src.parsers.factory import ParserFactory
 from src.storage.sqlite_storage import SQLiteStorage
-from src.storage.neo4j_storage import Neo4jStorage
+from src.storage.falkordb_storage import FalkorDBStorage
 from src.graph.manager import GraphManager
 from src.IR.models import CodeSnippet, Relationship, SnippetType
+from src.model.LLM import get_llm
 
 logger = logging.getLogger(__name__)
 
@@ -23,24 +24,17 @@ class ProjectIndexer:
     Handles indexing for a single specific folder/workspace.
     All operations are manual, allowing for fine-grained control.
     """
-    def __init__(self, src_path: str, chunk_size: int = 1000, 
-                 neo4j_uri: str = "bolt://localhost:7687", 
-                 neo4j_user: str = "neo4j", 
-                 neo4j_password: str = "password",
-                 auto_start_neo4j: bool = True):
+    def __init__(self, src_path: str, chunk_size: int = 1000):
         self.src_path = os.path.abspath(src_path)
         self.chunk_size = chunk_size
-        self.neo4j_uri = neo4j_uri
-        self.neo4j_user = neo4j_user
-        self.neo4j_password = neo4j_password
-        self.auto_start_neo4j = auto_start_neo4j
         
         self.context = self._create_context(self.src_path)
-        self.factory = ParserFactory(chunk_size=chunk_size)
+        self.llm = get_llm()
+        self.factory = ParserFactory(chunk_size=chunk_size, llm=self.llm)
         self.graph_manager = GraphManager(self.factory)
         
         self.sqlite: Optional[SQLiteStorage] = None
-        self.neo4j: Optional[Neo4jStorage] = None
+        self.graph_db: Optional[FalkorDBStorage] = None
 
     def _create_context(self, path: str) -> ProjectContext:
         folder_name = os.path.basename(path.rstrip(os.sep))
@@ -61,11 +55,9 @@ class ProjectIndexer:
         logger.debug(f"Data directory: {self.context.data_dir}")
         os.makedirs(self.context.data_dir, exist_ok=True)
         self.sqlite = SQLiteStorage(self.context.sqlite_path)
-        self.neo4j = Neo4jStorage(
-            uri=self.neo4j_uri, 
-            user=self.neo4j_user, 
-            password=self.neo4j_password,
-            auto_start=self.auto_start_neo4j
+        self.graph_db = FalkorDBStorage(
+            db_path=os.path.join(self.context.data_dir, "graph.db"),
+            graph_name=self.context.project_id
         )
 
     def extract_snippets(self) -> List[CodeSnippet]:
@@ -88,19 +80,19 @@ class ProjectIndexer:
 
     def save(self, snippets: List[CodeSnippet], relationships: List[Relationship]):
         """Persists extracted data to both relational and graph storage."""
-        if not self.sqlite or not self.neo4j:
+        if not self.sqlite or not self.graph_db:
             logger.error("Attempted to save before storage initialization")
             raise RuntimeError("Storage not initialized. Call initialize_storage() first.")
             
-        logger.info("Saving data to SQLite and Neo4j...")
+        logger.info("Saving data to SQLite and FalkorDB...")
         self.sqlite.save_snippets(snippets)
-        self.neo4j.save_snippets(snippets)
-        self.neo4j.save_relationships(relationships)
+        self.graph_db.save_snippets(snippets)
+        self.graph_db.save_relationships(relationships)
         logger.info("Save completed successfully")
 
     def cleanup(self, current_snippets: List[CodeSnippet]):
         """Removes data for files that no longer exist on disk."""
-        if not self.sqlite or not self.neo4j:
+        if not self.sqlite or not self.graph_db:
             logger.warning("Cleanup skipped: storage not initialized")
             return
 
@@ -113,22 +105,22 @@ class ProjectIndexer:
             logger.info(f"Removing deleted file from SQLite: {f}")
             self.sqlite.delete_file_snippets(f)
             
-        # Neo4j Cleanup
-        old_neo4j = set(self.neo4j.get_all_file_paths())
-        for f in (old_neo4j - current_files):
-            logger.info(f"Removing deleted file from Neo4j: {f}")
-            self.neo4j.delete_file_data(f)
+        # FalkorDB Cleanup
+        old_graph = set(self.graph_db.get_all_file_paths())
+        for f in (old_graph - current_files):
+            logger.info(f"Removing deleted file from FalkorDB: {f}")
+            self.graph_db.delete_file_data(f)
         
         logger.info("Cleanup completed")
 
     def verify(self):
         """Prints a summary of the current project state in storage."""
-        if not self.neo4j:
+        if not self.graph_db:
             return
-        db_snippets = self.neo4j.get_all_snippets()
-        placeholders = [s for s in db_snippets if s.type == SnippetType.PLACEHOLDER]
+        db_nodes = self.graph_db.get_all_nodes()
+        placeholders = [s for s in db_nodes if s.type == SnippetType.PLACEHOLDER]
         
         logger.info(f"Project Index Summary [{self.context.project_id}]:")
-        logger.info(f"  - Total Nodes: {len(db_snippets)}")
-        logger.info(f"  - Local Snippets: {len(db_snippets) - len(placeholders)}")
+        logger.info(f"  - Total Nodes: {len(db_nodes)}")
+        logger.info(f"  - Local Snippets: {len(db_nodes) - len(placeholders)}")
         logger.info(f"  - External Symbols: {len(placeholders)}")

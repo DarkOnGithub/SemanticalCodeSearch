@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Any
 from src.parsers.base_parser import BaseParser
 from src.parsers.python_parser import PythonParser
 from src.parsers.c_parser import CParser
@@ -9,12 +9,12 @@ from src.IR.models import CodeSnippet
 logger = logging.getLogger(__name__)
 
 class ParserFactory:
-    def __init__(self, chunk_size: int = 1500):
+    def __init__(self, chunk_size: int = 1500, llm: Optional[Any] = None):
         self.chunk_size = chunk_size
         self._parsers: Dict[str, BaseParser] = {
-            "py": PythonParser(chunk_size=chunk_size),
-            "c": CParser(chunk_size=chunk_size),
-            "h": CParser(chunk_size=chunk_size),
+            "py": PythonParser(chunk_size=chunk_size, llm=llm),
+            "c": CParser(chunk_size=chunk_size, llm=llm),
+            "h": CParser(chunk_size=chunk_size, llm=llm),
         }
 
     def get_parser_for_extension(self, extension: str) -> Optional[BaseParser]:

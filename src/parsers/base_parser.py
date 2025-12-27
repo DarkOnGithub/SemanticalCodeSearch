@@ -6,13 +6,14 @@ from src.IR.models import CodeSnippet
 logger = logging.getLogger(__name__)
 
 class BaseParser(ABC):
-    def __init__(self, chunk_size: int = 8000):
+    def __init__(self, chunk_size: int = 8000, llm: Optional[Any] = None):
         self._tree_cache: Dict[str, Any] = {}
         self._code_cache: Dict[str, str] = {}
         self._snippet_cache: Dict[str, List[CodeSnippet]] = {}
         self._content_hash_cache: Dict[str, str] = {}
         self._metadata_cache: Dict[str, Dict[str, Any]] = {}
         self.chunk_size = chunk_size
+        self.llm = llm
 
     @property
     @abstractmethod

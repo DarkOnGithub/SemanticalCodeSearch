@@ -30,6 +30,7 @@ class CodeSnippet:
     name: str
     type: SnippetType
     content: str
+    summary: Optional[str] = None
     parent_id: Optional[str] = None
     docstring: Optional[str] = None
     signature: Optional[str] = None
@@ -56,3 +57,10 @@ class Relationship:
 
     def to_tuple(self):
         return (self.source_id, self.target_id, self.type.value, json.dumps(self.metadata) if self.metadata else None)
+
+@dataclass
+class GraphNode:
+    id: str
+    name: str
+    type: SnippetType
+    file_path: Optional[str] = None
