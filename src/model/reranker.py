@@ -30,21 +30,15 @@ class JinaReranker:
         if self.model is not None:
             return
 
-        # int8 quantization configuration
-        bnb_config = BitsAndBytesConfig(
-            load_in_8bit=True,
-        )
-
-        logger.info(f"Loading {self.model_id} in int8 quantization...")
+        logger.info(f"Loading {self.model_id} in float16...")
         
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, trust_remote_code=True)
             self.model = AutoModelForSequenceClassification.from_pretrained(
                 self.model_id,
-                quantization_config=bnb_config,
+                torch_dtype=torch.float16,
                 device_map="auto",
                 trust_remote_code=True,
-                attn_implementation="eager",
             )
             self.model.eval()
             self._initialized = True
@@ -53,9 +47,9 @@ class JinaReranker:
             logger.error(f"Failed to load Jina Reranker: {e}")
             raise
 
-    def rerank(self, query: str, documents: List[str], top_n: int = 5) -> List[Dict[str, Any]]:
+    def rerank(self, query: str, documents: List[str], top_n: int = 5, batch_size: int = 4) -> List[Dict[str, Any]]:
         """
-        Reranks a list of documents based on a query.
+        Reranks a list of documents based on a query using small batches to avoid OOM.
         Returns a list of dictionaries with index and score, sorted by score descending.
         """
         if not documents:
@@ -64,54 +58,70 @@ class JinaReranker:
         self._load_model()
 
         try:
-            # Prepare pairs for the reranker
-            pairs = [[query, doc] for doc in documents]
+            clean_docs = [str(doc) if doc is not None else "" for doc in documents]
+            all_scores = []
             
-            with torch.no_grad():
-                # Jina reranker v2 base multilingual provides compute_score
-                # which handles tokenization and scoring internally if trust_remote_code=True
-                if hasattr(self.model, 'compute_score'):
-                    # Some versions return a tuple, some return a list. Handling both.
-                    res = self.model.compute_score(pairs, max_length=1024)
-                    if isinstance(res, (list, torch.Tensor)):
-                        scores = res
-                    elif isinstance(res, tuple) and len(res) > 0:
-                        scores = res[0]
-                    else:
-                        scores = res
-                else:
-                    # Fallback to manual scoring if compute_score is not available
-                    inputs = self.tokenizer(
-                        pairs, 
-                        padding=True, 
-                        truncation=True, 
-                        return_tensors="pt", 
-                        max_length=1024
-                    ).to(self.model.device)
-                    
-                    outputs = self.model(**inputs, return_dict=True)
-                    if hasattr(outputs, 'logits'):
-                        logits = outputs.logits.view(-1, ).float()
-                    else:
-                        # Sometimes it might return a tuple if return_dict=False or other reasons
-                        logits = outputs[0].view(-1, ).float()
-                        
-                    scores = torch.sigmoid(logits).cpu().numpy().tolist()
+            # Process in small batches to avoid OOM
+            for i in range(0, len(clean_docs), batch_size):
+                batch_docs = clean_docs[i:i + batch_size]
+                pairs = [[query, doc] for doc in batch_docs]
+                
+                batch_scores = None
+                with torch.no_grad():
+                    # Try the model's built-in compute_score first
+                    if hasattr(self.model, 'compute_score'):
+                        try:
+                            res = self.model.compute_score(pairs, max_length=1024)
+                            if isinstance(res, (list, torch.Tensor)):
+                                batch_scores = res
+                            elif isinstance(res, tuple) and len(res) > 0:
+                                batch_scores = res[0]
+                            else:
+                                batch_scores = res
+                        except Exception as ce:
+                            logger.warning(f"Batch compute_score failed: {ce}")
 
-            # Create list of (index, score) pairs
+                    # Fallback to manual scoring for this batch
+                    if batch_scores is None:
+                        inputs = self.tokenizer(
+                            pairs, 
+                            padding=True, 
+                            truncation=True, 
+                            return_tensors="pt", 
+                            max_length=1024
+                        ).to(self.model.device)
+                        
+                        inputs.pop("token_type_ids", None)
+                        
+                        outputs = self.model(**inputs, return_dict=True)
+                        if hasattr(outputs, 'logits'):
+                            logits = outputs.logits.view(-1, ).float()
+                        else:
+                            logits = outputs[0].view(-1, ).float()
+                            
+                        batch_scores = torch.sigmoid(logits).cpu().numpy().tolist()
+                
+                if isinstance(batch_scores, torch.Tensor):
+                    batch_scores = batch_scores.cpu().numpy().tolist()
+                elif not isinstance(batch_scores, list):
+                    batch_scores = [float(batch_scores)]
+                
+                all_scores.extend(batch_scores)
+                
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
             results = [
                 {"index": i, "score": float(score)}
-                for i, score in enumerate(scores)
+                for i, score in enumerate(all_scores)
             ]
             
-            # Sort by score descending
             results.sort(key=lambda x: x["score"], reverse=True)
             
             return results[:top_n]
         except Exception as e:
-            logger.error(f"Error during reranking: {e}")
-            # Fallback: return first top_n results with 0 score if reranking fails
-            return [{"index": i, "score": 0.0} for i in range(min(len(documents), top_n))]
+            logger.error(f"Error during reranking: {e}", exc_info=True)
+            return [{"index": i, "score": 0.0001 / (i + 1)} for i in range(min(len(documents), top_n))]
 
 def get_reranker():
     return JinaReranker()

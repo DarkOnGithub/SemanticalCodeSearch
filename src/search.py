@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 from src.indexer import ProjectIndexer
 from src.model.orchestrator import Orchestrator
 from src.model.reranker import get_reranker
@@ -36,166 +36,182 @@ class SearchManager:
 
     def search(self, query: str, n_results: int = 5) -> Dict[str, Any]:
         """
-        Performs a semantic search for snippets and hydrates them with metadata and relations.
-        Returns a dictionary containing results and orchestration metadata.
+        Performs a hybrid search (Semantic + Keyword) with RRF fusion and Re-ranking.
         """
         start_time = time.time()
         if not self.chroma or not self.embedding_model:
             logger.error("Search components not initialized.")
             return {"results": [], "final_query": query, "hyde_used": False}
 
-        # Check if the vector database is empty
-        count = self.chroma.collection.count()
-        if count == 0:
-            logger.warning("Vector database is empty. Please run indexing first.")
-            return {"results": [], "final_query": query, "hyde_used": False}
+        # 1. Orchestration (HyDE)
+        final_query, hyde_used = self._orchestrate_query(query)
 
-        # 0. Orchestrate the query (HyDE)
-        final_query = query
-        hyde_used = False
-        if self.orchestrator:
-            o_start = time.time()
-            print(f"\n[Search Pipeline] 0. Orchestrating query: '{query}'")
-            final_query = self.orchestrator.process_query(query)
-            hyde_used = (final_query != query)
-            if hyde_used:
-                print("[Search Pipeline] HyDE augmented query generated.")
-            print(f"[Search Pipeline] 0. Orchestration took {time.time() - o_start:.2f}s")
+        # 2. Retrieval (Vector + Keyword)
+        initial_n = max(n_results * 10, 100)
+        vector_results, keyword_results = self._retrieve_candidates(query, final_query, hyde_used, initial_n)
 
-        # 1. Embed the query
-        e_start = time.time()
-        print("[Search Pipeline] 1. Embedding final query...")
-        query_embedding = self.embedding_model.embed_text(final_query)
-        print(f"[Search Pipeline] 1. Embedding took {time.time() - e_start:.2f}s")
+        # 3. Fusion (Reciprocal Rank Fusion)
+        sorted_ids = self._fuse_results(vector_results, keyword_results)
         
-        # 2. Get similar snippets from ChromaDB
-        initial_n = max(n_results * 10, 50) if self.reranker else n_results
-        r_start = time.time()
-        print(f"[Search Pipeline] 2. Retrieving top {initial_n} candidates from ChromaDB...")
-        results = self.chroma.query(query_embedding, n_results=initial_n)
-        print(f"[Search Pipeline] 2. Retrieval took {time.time() - r_start:.2f}s")
-        
-        # 2.1 Rerank results if reranker is available
-        if self.reranker and results:
-            rk_start = time.time()
-            print(f"[Search Pipeline] 2.1 Reranking {len(results)} results with {self.reranker.model_id}...")
-            logger.info(f"Reranking {len(results)} results...")
-            documents = [res["document"] for res in results]
-            reranked_results_meta = self.reranker.rerank(query, documents, top_n=n_results)
-            
-            # Reorder original results based on reranker indices and update scores
-            new_results = []
-            for meta in reranked_results_meta:
-                idx = meta["index"]
-                res = results[idx]
-                res["distance"] = meta["score"]  # Update score to reranker score
-                new_results.append(res)
-            results = new_results
-            print(f"[Search Pipeline] 2.1 Reranking took {time.time() - rk_start:.2f}s")
+        # 4. Hydration & Re-ranking
+        final_results = self._hydrate_and_rerank(sorted_ids[:initial_n], vector_results, keyword_results, query, n_results)
 
-        hydrated_results = []
-        h_start = time.time()
-        print("[Search Pipeline] 3. Hydrating results with metadata and relationships...")
-        for res in results:
-            snippet_id = res["id"]
-            
-            # 3. Fetch full snippet data from SQLite
-            snippet = self.sqlite.get_snippet(snippet_id) if self.sqlite else None
-            if not snippet:
-                continue
-
-            # 3.1 Fetch parent snippet for context
-            parent_snippet = None
-            if snippet.parent_id:
-                parent_snippet = self.sqlite.get_snippet(snippet.parent_id)
-
-            # 4. Fetch relations from FalkorDB
-            relations = self.graph_db.get_snippet_relationships(snippet_id) if self.graph_db else []
-            
-            hydrated_results.append({
-                "snippet": snippet,
-                "parent": parent_snippet,
-                "score": res["distance"],
-                "relations": relations,
-                "document": res["document"]
-            })
-            
-        print(f"[Search Pipeline] 3. Hydration took {time.time() - h_start:.2f}s")
-        print(f"[Search Pipeline] Search complete. {len(hydrated_results)} results hydrated in {time.time() - start_time:.2f}s\n")
+        logger.info(f"Hybrid Search complete in {time.time() - start_time:.2f}s")
         return {
-            "results": hydrated_results,
+            "results": final_results,
             "final_query": final_query,
             "hyde_used": hyde_used
         }
 
     def answer_query(self, query: str, results: List[Dict[str, Any]]) -> str:
-        """
-        Uses Gemini LLM to generate an answer based on search results.
-        """
-        start_time = time.time()
-        if not self.llm:
-            return "LLM not available for answering."
-        
-        if not results:
-            return "No search results to base an answer on."
+        """Generates a complete answer using the LLM."""
+        if not self.llm: return "LLM not available."
+        if not results: return "No search results found."
 
-        snippets_context = ""
-        for i, res in enumerate(results, 1):
-            s = res["snippet"]
-            parent = res.get("parent")
-            relations = res.get("relations", [])
-            parent_info = f" [in {parent.name} ({parent.type.value})]" if parent else ""
-            
-            snippets_context += f"--- Snippet {i} [{s.name}{parent_info} at {s.file_path}:{s.start_line + 1}] ---\n"
-            if s.summary:
-                snippets_context += f"Summary: {s.summary}\n"
-            
-            if relations:
-                rel_str = ", ".join([f"{rel_type} {target}" for rel_type, target in relations])
-                snippets_context += f"Relationships: {rel_str}\n"
-                
-            snippets_context += f"Code:\n{s.content}\n\n"
-
-        prompt = ANSWER_PROMPT.format(query=query, snippets_context=snippets_context)
+        context = self._build_context_string(results)
+        prompt = ANSWER_PROMPT.format(query=query, snippets_context=context)
         
-        print("[Search Pipeline] 4. Generating final answer with Gemini LLM...")
         logger.info("Generating answer with Gemini...")
-        answer = self.llm.complete(prompt)
-        print(f"[Search Pipeline] 4. LLM Generation took {time.time() - start_time:.2f}s")
-        return answer
+        return self.llm.complete(prompt)
 
     def stream_answer_query(self, query: str, results: List[Dict[str, Any]]):
-        """
-        Yields tokens for the answer as they are generated.
-        """
+        """Yields tokens for the answer as they are generated."""
         if not self.llm:
-            yield "LLM not available for answering."
+            yield "LLM not available."
             return
-        
         if not results:
-            yield "No search results to base an answer on."
+            yield "No search results found."
             return
 
-        snippets_context = ""
+        context = self._build_context_string(results)
+        prompt = ANSWER_PROMPT.format(query=query, snippets_context=context)
+        
+        logger.info("Streaming answer with Gemini...")
+        yield from self.llm.stream_complete(prompt)
+
+    # --- Pipeline Steps ---
+
+    def _orchestrate_query(self, query: str) -> Tuple[str, bool]:
+        if not self.orchestrator:
+            return query, False
+            
+        logger.debug(f"Orchestrating query: {query}")
+        final_query = self.orchestrator.process_query(query)
+        return final_query, (final_query != query)
+
+    def _retrieve_candidates(self, original_query: str, final_query: str, hyde_used: bool, limit: int) -> Tuple[List[Dict], List[Dict]]:
+        # Vector Search
+        query_embedding = self.embedding_model.embed_text(final_query)
+        vector_results = self.chroma.query(query_embedding, n_results=limit)
+        
+        # Keyword Search
+        keyword_results = []
+        if self.sqlite:
+            search_queries = [original_query]
+            if hyde_used:
+                search_queries.append(final_query)
+            
+            seen_ids = set()
+            for q in search_queries:
+                snippets = self.sqlite.search_by_content(q, limit=limit)
+                for s in snippets:
+                    if s.id not in seen_ids:
+                        keyword_results.append({
+                            "id": s.id, 
+                            "document": s.to_embeddable_text(use_summary=True)
+                        })
+                        seen_ids.add(s.id)
+                if len(keyword_results) >= limit:
+                    break
+                    
+        return vector_results, keyword_results
+
+    def _fuse_results(self, vector_results: List[Dict], keyword_results: List[Dict], k: int = 60) -> List[str]:
+        """Implements Reciprocal Rank Fusion (RRF)."""
+        combined_scores = {}
+        
+        for rank, res in enumerate(vector_results, 1):
+            combined_scores[res["id"]] = combined_scores.get(res["id"], 0) + (1.0 / (k + rank))
+            
+        for rank, res in enumerate(keyword_results, 1):
+            combined_scores[res["id"]] = combined_scores.get(res["id"], 0) + (1.0 / (k + rank))
+
+        return sorted(combined_scores.keys(), key=lambda x: combined_scores[x], reverse=True)
+
+    def _hydrate_and_rerank(self, top_ids: List[str], vector_res: List[Dict], keyword_res: List[Dict], query: str, final_k: int) -> List[Dict]:
+        candidates = []
+        
+        # Hydrate snippet objects
+        for sid in top_ids:
+            if not self.sqlite: continue
+            snippet = self.sqlite.get_snippet(sid)
+            if not snippet: continue
+
+            # Find the best available document text for reranking
+            doc_text = next((r["document"] for r in vector_res if r["id"] == sid), None)
+            if not doc_text:
+                doc_text = next((r["document"] for r in keyword_res if r["id"] == sid), None)
+            if not doc_text:
+                doc_text = snippet.to_embeddable_text(use_summary=True)
+            
+            candidates.append({
+                "id": sid,
+                "snippet": snippet,
+                "document": doc_text
+            })
+
+        # Re-rank
+        if self.reranker and candidates:
+            logger.info(f"Reranking {len(candidates)} candidates...")
+            docs = [c["document"] for c in candidates]
+            reranked_meta = self.reranker.rerank(query, docs, top_n=final_k)
+            
+            # Reorder candidates based on reranker output
+            final_candidates = []
+            for meta in reranked_meta:
+                cand = candidates[meta["index"]]
+                cand["score"] = meta["score"]
+                final_candidates.append(cand)
+            candidates = final_candidates
+        else:
+            candidates = candidates[:final_k]
+
+        # Add Parents & Relations
+        results = []
+        for c in candidates:
+            snippet = c["snippet"]
+            parent = self.sqlite.get_snippet(snippet.parent_id) if snippet.parent_id else None
+            relations = self.graph_db.get_snippet_relationships(snippet.id) if self.graph_db else []
+            
+            results.append({
+                "snippet": snippet,
+                "parent": parent,
+                "relations": relations,
+                "score": c.get("score"),
+                "document": c["document"]
+            })
+            
+        return results
+
+    def _build_context_string(self, results: List[Dict[str, Any]]) -> str:
+        context_parts = []
         for i, res in enumerate(results, 1):
             s = res["snippet"]
             parent = res.get("parent")
             relations = res.get("relations", [])
-            parent_info = f" [in {parent.name} ({parent.type.value})]" if parent else ""
             
-            snippets_context += f"--- Snippet {i} [{s.name}{parent_info} at {s.file_path}:{s.start_line + 1}] ---\n"
+            parent_info = f" [in {parent.name} ({parent.type.value})]" if parent else ""
+            header = f"--- Snippet {i} [{s.name}{parent_info} at {s.file_path}:{s.start_line + 1}] ---"
+            
+            content = [header]
             if s.summary:
-                snippets_context += f"Summary: {s.summary}\n"
+                content.append(f"Summary: {s.summary}")
             
             if relations:
-                rel_str = ", ".join([f"{rel_type} {target}" for rel_type, target in relations])
-                snippets_context += f"Relationships: {rel_str}\n"
+                rel_str = ", ".join([f"{r_type} {target}" for r_type, target in relations])
+                content.append(f"Relationships: {rel_str}")
                 
-            snippets_context += f"Code:\n{s.content}\n\n"
-
-        prompt = ANSWER_PROMPT.format(query=query, snippets_context=snippets_context)
-        
-        print("[Search Pipeline] 4. Starting streaming answer with Gemini LLM...")
-        for token in self.llm.stream_complete(prompt):
-            yield token
-
+            content.append(f"Code:\n{s.content}\n")
+            context_parts.append("\n".join(content))
+            
+        return "\n".join(context_parts)

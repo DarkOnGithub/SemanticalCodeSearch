@@ -79,15 +79,11 @@ class GeminiLLM:
     def complete(self, prompt: str, json_mode: bool = False) -> str:
         """Generates a completion using the answerer model."""
         try:
-            # Prepare configuration for Gemini 3 with low thinking
             thinking_config = None
             if "gemini-3" in self.answerer_model:
                 try:
-                    # Attempt to use thinking_level="low" as requested
                     thinking_config = types.ThinkingConfig(thinking_level="low")
                 except (AttributeError, TypeError):
-                    # Fallback if the SDK version doesn't support thinking_level yet
-                    # or uses different parameters
                     thinking_config = types.ThinkingConfig(include_thoughts=True)
             
             config = types.GenerateContentConfig(

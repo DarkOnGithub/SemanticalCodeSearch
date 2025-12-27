@@ -29,7 +29,6 @@ class JinaEmbeddingModel:
         self.model_name = model_name
         self.use_4bit = use_4bit
         self.model = None
-        # We'll load the model lazily on the first call to embed_text
 
     def load(self):
         """Public method to force load the model."""
@@ -39,7 +38,6 @@ class JinaEmbeddingModel:
         if self.model is not None:
             return
 
-        # Determine device and quantization
         if torch.cuda.is_available():
             device = "cuda"
             if self.use_4bit:
@@ -63,7 +61,6 @@ class JinaEmbeddingModel:
             model_kwargs = {}
 
         try:
-            # sentence-transformers handles loading via transformers with model_kwargs
             self.model = SentenceTransformer(
                 self.model_name, 
                 device=device,
@@ -82,7 +79,6 @@ class JinaEmbeddingModel:
         """
         self._load_model()
         try:
-            # encode() handles batching and normalization
             embeddings = self.model.encode(
                 text, 
                 batch_size=batch_size, 
@@ -93,7 +89,6 @@ class JinaEmbeddingModel:
             return embeddings
         except Exception as e:
             logger.error(f"Error during embedding generation: {e}")
-            # Clear cache on OOM to attempt recovery
             if "out of memory" in str(e).lower():
                 torch.cuda.empty_cache()
                 gc.collect()
@@ -115,12 +110,10 @@ class JinaEmbeddingModel:
         embeddings = self.embed_text(texts, batch_size=batch_size)
         
         if len(embeddings) == 0:
-            # Fallback for failed embedding generation
             logger.warning(f"Embedding generation failed for {len(snippets)} snippets. Returning zero vectors.")
             dim = self.model.get_sentence_embedding_dimension() if self.model else 1536
             return [np.zeros(dim) for _ in range(len(snippets))]
             
-        # Convert the numpy array of embeddings back to a list of numpy arrays
         return [embeddings[i] for i in range(len(snippets))]
 
     def clear_cache(self):

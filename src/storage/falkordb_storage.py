@@ -18,7 +18,6 @@ class FalkorDBStorage:
         try:
             self.graph.query("CREATE INDEX FOR (s:Snippet) ON (s.id)")
         except Exception as e:
-            # Index might already exist
             logger.debug(f"Index creation note: {e}")
 
     def save_snippets(self, snippets: List[CodeSnippet]):
@@ -47,7 +46,6 @@ class FalkorDBStorage:
         if not relationships:
             return
 
-        # 1. Ensure all targets exist (placeholders)
         target_ids = list(set(r.target_id for r in relationships))
         for target_id in target_ids:
             placeholder_query = """
@@ -76,7 +74,6 @@ class FalkorDBStorage:
         query = "MATCH (s:Snippet) WHERE s.file_path <> '' RETURN DISTINCT s.file_path"
         try:
             result = self.graph.query(query)
-            # FalkorDB result structure might differ, usually result.result_set
             return [record[0] for record in result.result_set]
         except Exception as e:
             logger.error(f"Error fetching file paths from FalkorDB: {e}")
@@ -124,6 +121,5 @@ class FalkorDBStorage:
         return nodes
 
     def close(self):
-        # FalkorDBLite might not need explicit close, but good to have
         pass
 

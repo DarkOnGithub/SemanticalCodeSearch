@@ -19,7 +19,7 @@ def main():
     load_dotenv()
     parser = argparse.ArgumentParser(description="Semantical Code Search Indexer")
     parser.add_argument("dir", nargs="?", default=os.getcwd(), help="Directory to index")
-    parser.add_argument("--chunk-size", type=int, default=500, help="Chunk size for parsing")
+    parser.add_argument("--chunk-size", type=int, default=1000, help="Chunk size for parsing")
     parser.add_argument("--workers", type=int, default=10, help="Number of parallel workers for summarization")
     parser.add_argument("--no-summary", action="store_true", help="Disable LLM summarization of code snippets")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose (DEBUG) logging")

@@ -13,13 +13,10 @@ def create_app(indexer: ProjectIndexer):
     app = Flask(__name__)
     CORS(app)
     
-    # Initialize search components
     indexer.initialize_storage()
     orchestrator = get_orchestrator()
     search_manager = SearchManager(indexer, orchestrator=orchestrator)
 
-    # Pre-load models at startup if we are in the main execution process 
-    # (to avoid loading twice when using Flask reloader)
     if os.environ.get('WERKZEUG_RUN_MAIN') == 'true' or not app.debug:
         logger.info("Pre-loading models at startup...")
         if orchestrator:
@@ -39,7 +36,6 @@ def create_app(indexer: ProjectIndexer):
         
         logger.info(f"Web Search Query: {query}")
         
-        # Check if indexed
         if search_manager.chroma.collection.count() == 0:
             return jsonify({
                 "error": "Codebase not indexed",
@@ -85,7 +81,6 @@ def create_app(indexer: ProjectIndexer):
             return jsonify({"error": "No query provided"}), 400
         
         try:
-            # 1. Perform retrieval and reranking (synchronous)
             search_data = search_manager.search(query, 10)
             results = search_data["results"]
             
@@ -114,7 +109,6 @@ def create_app(indexer: ProjectIndexer):
                 }
                 yield f"data: {json.dumps(initial_payload)}\n\n"
 
-                # Then, stream the answer tokens
                 for token in search_manager.stream_answer_query(query, results):
                     payload = {"type": "token", "token": token}
                     yield f"data: {json.dumps(payload)}\n\n"
@@ -156,7 +150,6 @@ def create_app(indexer: ProjectIndexer):
         except Exception as e:
             return jsonify({"error": str(e)}), 500
 
-    # Serve the frontend
     @app.route('/')
     def index():
         return app.send_static_file('index.html')
@@ -164,22 +157,14 @@ def create_app(indexer: ProjectIndexer):
     return app
 
 def run_server(indexer: ProjectIndexer, port=5000):
-    # Set environment variables for hot reload
-    os.environ['FLASK_DEBUG'] = '1'
-    
-    # We want to enable debug mode and the reloader.
-    # In Flask's debug mode, the server will restart whenever code changes.
-    # Thanks to lazy loading in models, the heavy initialization will only 
-    # happen in the active worker process, not the parent reloader process.
+    os.environ['FLASK_DEBUG'] = '0'
     
     app = create_app(indexer)
-    # Ensure static folder exists
     static_dir = os.path.join(os.path.dirname(__file__), 'static')
     os.makedirs(static_dir, exist_ok=True)
     app.static_folder = static_dir
     
     logger.info(f"Starting Web Server on http://localhost:{port} with hot reload")
     
-    # debug=True enables the reloader and the debugger
-    app.run(host='0.0.0.0', port=port, debug=True, use_reloader=True)
+    app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False)
 

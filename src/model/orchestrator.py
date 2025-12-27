@@ -115,7 +115,6 @@ class Orchestrator:
         """
         logger.info(f"Orchestrating query: {query}")
         
-        # 1. Decide if HyDE is needed
         decision_prompt = HYDE_DECISION_PROMPT.format(query=query)
         decision = self.llm.complete(decision_prompt, max_new_tokens=10).upper()
         
@@ -123,7 +122,6 @@ class Orchestrator:
         
         if "YES" in decision:
             logger.info("Generating hypothetical code (HyDE)...")
-            # 2. Generate hypothetical code
             gen_prompt = HYDE_GENERATION_PROMPT.format(query=query)
             fake_code = self.llm.complete(gen_prompt, max_new_tokens=256)
             

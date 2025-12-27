@@ -50,10 +50,25 @@ class CodeSnippet:
         file_info = f"File: {self.file_path}\n" if self.file_path else ""
         name_info = f"Name: {self.name}\n" if self.name else ""
         type_info = f"Type: {self.type.value}\n"
-        context = f"{file_info}{name_info}{type_info}"
+        
+        # Add parent context if available in metadata
+        parent_sig = self.metadata.get("parent_signature")
+        parent_info = f"Parent Context: {parent_sig}\n" if parent_sig else ""
+        
+        context = f"{file_info}{name_info}{type_info}{parent_info}"
 
-        if use_summary and self.summary:
-            return f"{context}Summary: {self.summary}\n\nCode:\n{self.content}"
+        summary_text = ""
+        if use_summary:
+            if self.summary:
+                summary_text = f"Summary: {self.summary}\n"
+            
+            # Inherit parent summary if child doesn't have its own or to add more context
+            parent_summary = self.metadata.get("parent_summary")
+            if parent_summary:
+                summary_text += f"Parent Summary: {parent_summary}\n"
+
+        if summary_text:
+            return f"{context}{summary_text}\nCode:\n{self.content}"
         else:
             return f"{context}Code:\n{self.content}"
 

@@ -24,7 +24,6 @@ class ChromaStorage:
             raise ValueError("Number of snippets and embeddings must match")
 
         ids = [s.id for s in snippets]
-        # ChromaDB expects metadata to be simple types (str, int, float, bool)
         metadatas = []
         for s in snippets:
             meta = {
@@ -37,11 +36,8 @@ class ChromaStorage:
             }
             metadatas.append(meta)
         
-        # We store the context-rich representation as the documents in ChromaDB
-        # This improves reranking performance and provides more context in search results
         documents = [s.to_embeddable_text(use_summary=True) for s in snippets]
 
-        # Use batching for large number of snippets
         batch_size = 500
         for i in range(0, len(snippets), batch_size):
             end = min(i + batch_size, len(snippets))
@@ -86,8 +82,6 @@ class ChromaStorage:
         """
         Retrieves all unique file paths stored in ChromaDB.
         """
-        # ChromaDB doesn't have a direct 'get distinct' for metadatas easily without fetching all
-        # or using a more complex query. For cleanup, we can fetch metadatas.
         results = self.collection.get(include=["metadatas"])
         if not results["metadatas"]:
             return []

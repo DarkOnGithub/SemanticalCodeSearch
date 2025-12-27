@@ -135,7 +135,6 @@ class CParser(BaseParser):
         return snippets
 
     def _create_snippet(self, node, tag, code, file_path, content_for_id, chunk_index: Optional[int] = None, override_content: Optional[str] = None) -> CodeSnippet:
-        # Make ID unique to this specific file and location to avoid collisions with identical code
         id_base = f"{file_path}:{node.start_byte}:{chunk_index}:{content_for_id}"
         snippet_id = hashlib.sha256(id_base.encode("utf-8")).hexdigest()
         actual_content = override_content if override_content is not None else content_for_id
