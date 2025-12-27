@@ -34,7 +34,8 @@ class ParserFactory:
         directory_path: str, 
         recursive: bool = False,
         ignore_dirs: Optional[List[str]] = None,
-        ignore_exts: Optional[List[str]] = None
+        ignore_exts: Optional[List[str]] = None,
+        should_parse_callback: Optional[callable] = None
     ) -> List[CodeSnippet]:
         """Parses all supported files in a directory"""
         all_snippets = []
@@ -61,7 +62,20 @@ class ParserFactory:
                     try:
                         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
                             content = f.read()
-                        snippets = parser.parse_file(content, file_path)
+                        
+                        import hashlib
+                        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                        
+                        snippets = None
+                        if should_parse_callback:
+                            snippets = should_parse_callback(file_path, content_hash)
+                        
+                        if snippets is None:
+                            logger.info(f"Parsing file: {file_path}")
+                            snippets = parser.parse_file(content, file_path)
+                        else:
+                            logger.info(f"Skipping parsing for unchanged file: {file_path}")
+                            
                         all_snippets.extend(snippets)
                     except Exception as e:
                         logger.error(f"Error parsing {file_path}: {e}")

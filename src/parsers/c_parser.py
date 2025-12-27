@@ -91,28 +91,37 @@ class CParser(BaseParser):
         return snippets
 
     def _extract_snippets(self, node, tag, code, file_path) -> List[CodeSnippet]:
-        snippet_content = code[node.start_byte:node.end_byte]
+        full_content = code[node.start_byte:node.end_byte]
         
-        if len(snippet_content) <= self.chunk_size:
-            snippet = self._create_snippet(node, tag, code, file_path, snippet_content)
-            if self.llm:
-                self.llm.summarize_snippet(snippet)
+        # Determine the body node for skeletonization/chunking
+        body_node = node.child_by_field_name("body")
+        if not body_node:
+            for child in node.children:
+                if child.type in ["field_declaration_list", "enumerator_list"]:
+                    body_node = child
+                    break
+
+        if len(full_content) <= self.chunk_size:
+            snippet = self._create_snippet(node, tag, code, file_path, full_content)
             return [snippet]
         
-        # If chunking, summarize each chunk individually
-        nodes = self.chunker.chunk_to_nodes(snippet_content)
+        # If chunking, the parent becomes a skeleton
+        skeleton_content = code[node.start_byte:body_node.start_byte] if body_node else full_content
+        parent_snippet = self._create_snippet(node, tag, code, file_path, full_content, override_content=skeleton_content)
+        parent_snippet.is_skeleton = True
         
-        snippets = []
+        nodes = self.chunker.chunk_to_nodes(full_content)
+        
+        snippets = [parent_snippet]
         for i, text_node in enumerate(nodes):
             display_name = None
             if "inclusive_scopes" in text_node.metadata and text_node.metadata["inclusive_scopes"]:
                 scopes = text_node.metadata["inclusive_scopes"]
                 display_name = scopes[-1]["name"]
 
-            snippet = self._create_snippet(node, tag, code, file_path, text_node.get_content(), chunk_index=i)
-            
-            if self.llm:
-                self.llm.summarize_snippet(snippet)
+            chunk_content = text_node.get_content()
+            snippet = self._create_snippet(node, tag, code, file_path, chunk_content, chunk_index=i)
+            snippet.parent_id = parent_snippet.id
             
             if display_name:
                 snippet.name = f"{display_name}_chunk_{i}"
@@ -125,8 +134,11 @@ class CParser(BaseParser):
         
         return snippets
 
-    def _create_snippet(self, node, tag, code, file_path, snippet_content, chunk_index: Optional[int] = None) -> CodeSnippet:
-        snippet_id = hashlib.sha256(snippet_content.encode("utf-8")).hexdigest()
+    def _create_snippet(self, node, tag, code, file_path, content_for_id, chunk_index: Optional[int] = None, override_content: Optional[str] = None) -> CodeSnippet:
+        # Make ID unique to this specific file and location to avoid collisions with identical code
+        id_base = f"{file_path}:{node.start_byte}:{chunk_index}:{content_for_id}"
+        snippet_id = hashlib.sha256(id_base.encode("utf-8")).hexdigest()
+        actual_content = override_content if override_content is not None else content_for_id
 
         cached_meta = self._metadata_cache.get(snippet_id)
         if cached_meta:
@@ -134,7 +146,7 @@ class CParser(BaseParser):
                 id=snippet_id,
                 name=cached_meta["name"],
                 type=cached_meta["type"],
-                content=snippet_content,
+                content=actual_content,
                 parent_id=None,
                 docstring=cached_meta["docstring"],
                 signature=cached_meta["signature"],
@@ -143,6 +155,7 @@ class CParser(BaseParser):
                 end_line=node.end_point[0],
                 start_byte=node.start_byte,
                 end_byte=node.end_byte,
+                is_skeleton=override_content is not None,
                 metadata={"chunk_index": chunk_index, "ts_node_id": node.id} if chunk_index is not None else {"ts_node_id": node.id}
             )
 
@@ -223,7 +236,7 @@ class CParser(BaseParser):
             id=snippet_id,
             name=name,
             type=snippet_type,
-            content=snippet_content,
+            content=actual_content,
             parent_id=None,  
             docstring=docstring,
             signature=signature,
@@ -232,5 +245,6 @@ class CParser(BaseParser):
             end_line=node.end_point[0],
             start_byte=node.start_byte,
             end_byte=node.end_byte,
+            is_skeleton=override_content is not None,
             metadata=metadata
         )

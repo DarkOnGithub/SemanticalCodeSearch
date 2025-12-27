@@ -17,7 +17,7 @@ class GraphManager:
             "c": CRelationshipExtractor,
         }
 
-    def build_graph(self, snippets: List[CodeSnippet]) -> List[Relationship]:
+    def build_graph(self, snippets: List[CodeSnippet], changed_files: set = None) -> List[Relationship]:
         """
         Second pass: Extract relationships from snippets and tree-sitter trees.
         """
@@ -39,6 +39,10 @@ class GraphManager:
                 snippets_by_file[s.file_path].append(s)
 
         for file_path, file_snippets in snippets_by_file.items():
+            # Skip relationship extraction if the file hasn't changed
+            if changed_files is not None and file_path not in changed_files:
+                continue
+                
             parser = self.parser_factory.get_parser_for_file(file_path)
             if not parser:
                 continue
@@ -65,32 +69,77 @@ class GraphManager:
         
         return all_relationships
 
-    def create_file_snippets(self, snippets: List[CodeSnippet]) -> List[CodeSnippet]:
-        """Creates snippets for the files themselves to serve as nodes in the graph"""
+    def create_file_snippets(self, snippets: List[CodeSnippet], changed_files: set = None) -> List[CodeSnippet]:
+        """Creates snippets for the files themselves, constructing a structural skeleton."""
         file_snippets = []
-        files_seen = set()
         
+        # Group snippets by file path
+        snippets_by_file: Dict[str, List[CodeSnippet]] = {}
         for s in snippets:
-            if s.file_path and s.file_path not in files_seen:
-                try:
-                    with open(s.file_path, 'r', encoding='utf-8', errors='ignore') as f:
-                        content = f.read()
+            if s.file_path:
+                if s.file_path not in snippets_by_file:
+                    snippets_by_file[s.file_path] = []
+                snippets_by_file[s.file_path].append(s)
+        
+        for file_path, file_elements in snippets_by_file.items():
+            # If the file hasn't changed, we can find the existing file snippet in the list
+            # because it would have been loaded from DB in Pass 1.
+            existing_file_snippet = next((s for s in file_elements if s.type == SnippetType.FILE), None)
+            
+            if changed_files is not None and file_path not in changed_files and existing_file_snippet:
+                # File hasn't changed and we already have its snippet from DB
+                continue
+
+            try:
+                with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    content = f.read()
+                
+                # Use a stable ID for the file snippet based on path
+                file_id = hashlib.sha256(f"file:{file_path}".encode("utf-8")).hexdigest()
+                
+                # Sort only top-level skeletons to avoid overlapping in the file-level view
+                top_level_skeletons = sorted(
+                    [s for s in file_elements if s.is_skeleton and s.parent_id is None],
+                    key=lambda x: x.start_byte if x.start_byte is not None else 0
+                )
+                
+                # Build the skeleton content by replacing bodies with "..."
+                skeleton_parts = []
+                last_idx = 0
+                for s in top_level_skeletons:
+                    if s.start_byte is None or s.end_byte is None:
+                        continue
                     
-                    file_id = hashlib.sha256(content.encode("utf-8")).hexdigest()
-                    file_snippets.append(CodeSnippet(
-                        id=file_id,
-                        name=os.path.basename(s.file_path),
-                        type=SnippetType.FILE,
-                        content=content,
-                        file_path=s.file_path,
-                        start_line=0,
-                        end_line=content.count("\n"),
-                        start_byte=0,
-                        end_byte=len(content)
-                    ))
-                    files_seen.add(s.file_path)
-                except Exception:
-                    continue
+                    # Add everything (imports, comments, etc.) between the last snippet and this one
+                    skeleton_parts.append(content[last_idx:s.start_byte])
+                    
+                    # Add the snippet's skeleton (e.g., "class MyClass:" or "def func(a):")
+                    skeleton_parts.append(s.content.strip())
+                    
+                    # Add a placeholder for the hidden body
+                    skeleton_parts.append("\n    ... # implementation hidden ...\n")
+                    last_idx = s.end_byte
+                
+                # Add the remainder of the file
+                skeleton_parts.append(content[last_idx:])
+                
+                file_skeleton = "".join(skeleton_parts)
+                
+                file_snippets.append(CodeSnippet(
+                    id=file_id,
+                    name=os.path.basename(file_path),
+                    type=SnippetType.FILE,
+                    content=file_skeleton,
+                    file_path=file_path,
+                    start_line=0,
+                    end_line=content.count("\n"),
+                    start_byte=0,
+                    end_byte=len(content),
+                    is_skeleton=True
+                ))
+            except Exception as e:
+                logger.error(f"Error creating file snippet for {file_path}: {e}")
+                continue
         
         return file_snippets
 
