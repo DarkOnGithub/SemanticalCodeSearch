@@ -6,7 +6,7 @@ from llama_index.packs.code_hierarchy import CodeHierarchyNodeParser
 logger = logging.getLogger(__name__)
 
 class CodeChunker:
-    def __init__(self, language: str, chunk_min_characters: int = 1000, chunk_max_characters: int = 8000):
+    def __init__(self, language: str, chunk_min_characters: int = 200, chunk_max_characters: int = 1000):
         target_language = "cpp" if language == "c" else language
         
         self.parser = CodeHierarchyNodeParser(

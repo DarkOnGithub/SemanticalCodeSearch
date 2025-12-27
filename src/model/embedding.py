@@ -1,6 +1,7 @@
 import logging
 import numpy as np
 import torch
+import gc
 from sentence_transformers import SentenceTransformer
 from transformers import BitsAndBytesConfig
 from typing import List, Union
@@ -27,12 +28,22 @@ class JinaEmbeddingModel:
             
         self.model_name = model_name
         self.use_4bit = use_4bit
-        
+        self.model = None
+        # We'll load the model lazily on the first call to embed_text
+
+    def load(self):
+        """Public method to force load the model."""
+        self._load_model()
+
+    def _load_model(self):
+        if self.model is not None:
+            return
+
         # Determine device and quantization
         if torch.cuda.is_available():
             device = "cuda"
-            if use_4bit:
-                logger.info(f"Loading {model_name} in 4-bit quantization for GPU")
+            if self.use_4bit:
+                logger.info(f"Loading {self.model_name} in 4-bit quantization for GPU")
                 model_kwargs = {
                     "quantization_config": BitsAndBytesConfig(
                         load_in_4bit=True,
@@ -41,19 +52,20 @@ class JinaEmbeddingModel:
                         bnb_4bit_use_double_quant=True,
                     ),
                     "dtype": torch.float16,
+                    "attn_implementation": "eager",
                 }
             else:
-                logger.info(f"Loading {model_name} in float16 for GPU")
-                model_kwargs = {"dtype": torch.float16}
+                logger.info(f"Loading {self.model_name} in float16 for GPU")
+                model_kwargs = {"dtype": torch.float16, "attn_implementation": "eager"}
         else:
             device = "cpu"
-            logger.info(f"Loading {model_name} on CPU (4-bit quantization via bitsandbytes is GPU-only, loading in float32)")
+            logger.info(f"Loading {self.model_name} on CPU (4-bit quantization via bitsandbytes is GPU-only, loading in float32)")
             model_kwargs = {}
 
         try:
             # sentence-transformers handles loading via transformers with model_kwargs
             self.model = SentenceTransformer(
-                model_name, 
+                self.model_name, 
                 device=device,
                 trust_remote_code=True,
                 model_kwargs=model_kwargs
@@ -64,10 +76,11 @@ class JinaEmbeddingModel:
             logger.error(f"Failed to load Jina Embedding model: {e}")
             raise
 
-    def embed_text(self, text: Union[str, List[str]], batch_size: int = 8) -> np.ndarray:
+    def embed_text(self, text: Union[str, List[str]], batch_size: int = 1) -> np.ndarray:
         """
         Generates embeddings for the given text or list of texts.
         """
+        self._load_model()
         try:
             # encode() handles batching and normalization
             embeddings = self.model.encode(
@@ -80,9 +93,13 @@ class JinaEmbeddingModel:
             return embeddings
         except Exception as e:
             logger.error(f"Error during embedding generation: {e}")
+            # Clear cache on OOM to attempt recovery
+            if "out of memory" in str(e).lower():
+                torch.cuda.empty_cache()
+                gc.collect()
             return np.array([])
 
-    def embed_snippets(self, snippets: List[CodeSnippet], batch_size: int = 8, use_summary: bool = True) -> List[np.ndarray]:
+    def embed_snippets(self, snippets: List[CodeSnippet], batch_size: int = 1, use_summary: bool = False) -> List[np.ndarray]:
         """
         Batch embeds a list of CodeSnippet objects.
         If use_summary is True, combines the summary and the code content.
@@ -93,17 +110,24 @@ class JinaEmbeddingModel:
             
         texts = []
         for s in snippets:
-            if use_summary and s.summary:
-                # Concatenate summary and code content with a clear separator
-                combined = f"Summary: {s.summary}\n\nCode:\n{s.content}"
-                texts.append(combined)
-            else:
-                texts.append(s.content)
+            texts.append(s.to_embeddable_text(use_summary=use_summary))
             
         embeddings = self.embed_text(texts, batch_size=batch_size)
         
+        if len(embeddings) == 0:
+            # Fallback for failed embedding generation
+            logger.warning(f"Embedding generation failed for {len(snippets)} snippets. Returning zero vectors.")
+            dim = self.model.get_sentence_embedding_dimension() if self.model else 1536
+            return [np.zeros(dim) for _ in range(len(snippets))]
+            
         # Convert the numpy array of embeddings back to a list of numpy arrays
         return [embeddings[i] for i in range(len(snippets))]
+
+    def clear_cache(self):
+        """Manually clear CUDA cache and collect garbage."""
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
 
 def get_embedding_model():
     return JinaEmbeddingModel()

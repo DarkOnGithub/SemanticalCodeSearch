@@ -42,6 +42,21 @@ class CodeSnippet:
     is_skeleton: bool = False
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    def to_embeddable_text(self, use_summary: bool = True) -> str:
+        """
+        Constructs a string representation of the snippet for embedding and retrieval.
+        Includes metadata like file path and name to provide more context.
+        """
+        file_info = f"File: {self.file_path}\n" if self.file_path else ""
+        name_info = f"Name: {self.name}\n" if self.name else ""
+        type_info = f"Type: {self.type.value}\n"
+        context = f"{file_info}{name_info}{type_info}"
+
+        if use_summary and self.summary:
+            return f"{context}Summary: {self.summary}\n\nCode:\n{self.content}"
+        else:
+            return f"{context}Code:\n{self.content}"
+
     def __str__(self):
         lines = f"L{self.start_line + 1}-L{self.end_line + 1}" if self.start_line is not None else "???"
         skel = " [SKEL]" if self.is_skeleton else ""

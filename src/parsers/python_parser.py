@@ -12,7 +12,7 @@ from src.parsers.chunker import CodeChunker
 logger = logging.getLogger(__name__)
 
 class PythonParser(BaseParser):
-    def __init__(self, chunk_size: int = 1500, llm: Optional[Any] = None):
+    def __init__(self, chunk_size: int = 500, llm: Optional[Any] = None):
         super().__init__(chunk_size=chunk_size, llm=llm)
         self.language = Language(tspython.language())
         self.parser = Parser(self.language)

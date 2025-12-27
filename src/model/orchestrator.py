@@ -18,7 +18,17 @@ class GemmaLLM:
             return
         
         self.model_id = model_id
-        
+        self.tokenizer = None
+        self.model = None
+
+    def load(self):
+        """Public method to force load the model."""
+        self._load_model()
+
+    def _load_model(self):
+        if self.model is not None:
+            return
+            
         # 4-bit quantization configuration
         bnb_config = BitsAndBytesConfig(
             load_in_4bit=True,
@@ -27,15 +37,16 @@ class GemmaLLM:
             bnb_4bit_compute_dtype=torch.bfloat16
         )
 
-        logger.info(f"Loading {model_id} in 4-bit quantization...")
+        logger.info(f"Loading {self.model_id} in 4-bit quantization...")
         
         try:
-            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+            self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
             self.model = AutoModelForCausalLM.from_pretrained(
-                model_id,
+                self.model_id,
                 quantization_config=bnb_config,
                 device_map="auto",
-                torch_dtype=torch.bfloat16
+                torch_dtype=torch.bfloat16,
+                attn_implementation="sdpa",
             )
             self._initialized = True
             logger.info("Gemma model loaded successfully.")
@@ -44,6 +55,7 @@ class GemmaLLM:
             raise
 
     def complete(self, prompt: str, max_new_tokens: int = 512, temperature: float = 0.1) -> str:
+        self._load_model()
         try:
             inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
             
@@ -91,6 +103,10 @@ Hypothetical Code Snippet:"""
 class Orchestrator:
     def __init__(self):
         self.llm = GemmaLLM()
+
+    def load(self):
+        """Forces loading of the underlying LLM."""
+        self.llm.load()
 
     def process_query(self, query: str) -> str:
         """

@@ -1,5 +1,7 @@
 import argparse
 import os
+# Set CUDA allocation configuration before any torch imports to prevent fragmentation and OOM
+os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import logging
 from src.indexer import ProjectIndexer
 from src.search import SearchManager
@@ -17,11 +19,18 @@ def main():
     load_dotenv()
     parser = argparse.ArgumentParser(description="Semantical Code Search Indexer")
     parser.add_argument("dir", nargs="?", default=os.getcwd(), help="Directory to index")
-    parser.add_argument("--chunk-size", type=int, default=1000, help="Chunk size for parsing")
+    parser.add_argument("--chunk-size", type=int, default=500, help="Chunk size for parsing")
     parser.add_argument("--workers", type=int, default=10, help="Number of parallel workers for summarization")
+    parser.add_argument("--no-summary", action="store_true", help="Disable LLM summarization of code snippets")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose (DEBUG) logging")
     parser.add_argument("--query", type=str, help="Search the codebase using natural language")
+    parser.add_argument("--web", action="store_true", help="Launch the modern web interface")
+    parser.add_argument("--port", type=int, default=5000, help="Port for the web server")
     args = parser.parse_args()
+
+    # Determine if we should launch Web Server
+    # Launch Web if explicitly requested OR if no query/indexing command is implied
+    should_launch_web = args.web or (not args.query and len(os.sys.argv) <= 2)
 
     setup_logging(args.verbose)
     
@@ -29,10 +38,16 @@ def main():
     indexer = ProjectIndexer(
         src_path=args.dir, 
         chunk_size=args.chunk_size,
-        max_workers=args.workers
+        max_workers=args.workers,
+        disable_summary=args.no_summary
     )
     
     # 2. Manually trigger the pipeline steps
+    if should_launch_web:
+        from src.server import run_server
+        run_server(indexer, port=args.port)
+        return
+
     indexer.initialize_storage()
     
     if args.query:
@@ -69,9 +84,9 @@ def main():
                 
                 # print(f"\n    Code:\n{s.content[:200]}...") # Optional: show snippet start
             
-            # 3. Generate natural language answer using DeepSeek
+            # 3. Generate natural language answer using Gemini
             print("\n" + "="*50)
-            print("--- DeepSeek Analysis ---")
+            print("--- Gemini Analysis ---")
             answer = searcher.answer_query(args.query, results)
             print(answer)
             print("="*50 + "\n")

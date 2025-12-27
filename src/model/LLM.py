@@ -1,16 +1,18 @@
 import logging
 import os
 import json
-from openai import OpenAI  # Changed from google.genai
-from typing import List, Dict
+import re
+from google import genai
+from google.genai import types
+from typing import List, Dict, Generator
 from src.IR.models import CodeSnippet
 
 logger = logging.getLogger(__name__)
 
-# DeepSeek specific configuration
-
-THINKING = False # DeepSeek V3 is standard; set to True to use 'deepseek-reasoner' (R1)
-DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+# Gemini specific configuration
+# The summarizer llm is gemini 2.5 flash lite and the answerer is gemini flash 3 low thinking
+SUMMARIZER_MODEL_NAME = "gemini-2.5-flash-lite"
+ANSWERER_MODEL_NAME = "gemini-3-flash-preview"
 
 SUMMARY_PROMPT = """You are an expert software architect. Your task is to provide a concise, high-level technical summary of the code provided below.
 Focus on:
@@ -40,91 +42,107 @@ Components to summarize:
 
 JSON Output:"""
 
-class DeepSeekLLM:
+class GeminiLLM:
     _instance = None
 
     def __new__(cls, *args, **kwargs):
         if cls._instance is None:
-            cls._instance = super(DeepSeekLLM, cls).__new__(cls)
+            cls._instance = super(GeminiLLM, cls).__new__(cls)
             cls._instance._initialized = False
         return cls._instance
 
     def __init__(
         self, 
-        model_name: str = "deepseek-chat", # Points to DeepSeek-V3
+        summarizer_model: str = SUMMARIZER_MODEL_NAME,
+        answerer_model: str = ANSWERER_MODEL_NAME,
         temperature: float = 0.1,
         max_output_tokens: int = 4096,
     ):
         """
-        Initializes the DeepSeek client using the OpenAI SDK.
-        Expects DEEPSEEK_API_KEY to be set in the environment.
+        Initializes the Gemini client using the Google GenAI SDK.
+        Expects GEMINI_API_KEY to be set in the environment.
         """
         if self._initialized:
             return
-        api_key = os.getenv("DEEPSEEK_API_KEY")
+        api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
-            logger.warning("DEEPSEEK_API_KEY not found in environment. DeepSeekLLM may fail.")
+            logger.warning("GEMINI_API_KEY not found in environment. GeminiLLM may fail.")
             
-        # Initialize OpenAI client pointing to DeepSeek's URL
-        self.client = OpenAI(
-            api_key=api_key, 
-            base_url=DEEPSEEK_BASE_URL
-        )
+        self.client = genai.Client(api_key=api_key)
         
-        self.model_name = model_name
+        self.summarizer_model = summarizer_model
+        self.answerer_model = answerer_model
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
         self._initialized = True
 
     def complete(self, prompt: str, json_mode: bool = False) -> str:
+        """Generates a completion using the answerer model."""
         try:
-            # Handle Model Selection based on "THINKING" flag
-            # DeepSeek-V3 (chat) is fast/cheap. DeepSeek-R1 (reasoner) is for thinking.
-            current_model = "deepseek-reasoner" if THINKING else self.model_name
+            # Prepare configuration for Gemini 3 with low thinking
+            thinking_config = None
+            if "gemini-3" in self.answerer_model:
+                try:
+                    # Attempt to use thinking_level="low" as requested
+                    thinking_config = types.ThinkingConfig(thinking_level="low")
+                except (AttributeError, TypeError):
+                    # Fallback if the SDK version doesn't support thinking_level yet
+                    # or uses different parameters
+                    thinking_config = types.ThinkingConfig(include_thoughts=True)
             
-            # Prepare arguments
-            system_content = "You are a helpful assistant."
-            if json_mode:
-                system_content += " Always output valid JSON."
-                
-            kwargs = {
-                "model": current_model,
-                "messages": [
-                    {"role": "system", "content": system_content}, 
-                    {"role": "user", "content": prompt}
-                ],
-                "max_tokens": self.max_output_tokens,
-            }
+            config = types.GenerateContentConfig(
+                max_output_tokens=self.max_output_tokens,
+                temperature=0.0 if json_mode else self.temperature,
+                thinking_config=thinking_config,
+                response_mime_type="application/json" if json_mode else "text/plain"
+            )
 
-            # Add JSON mode enforcement if requested
-            # Note: DeepSeek requires the word "json" in the prompt AND this parameter
-            if json_mode and not THINKING:
-                kwargs["response_format"] = {"type": "json_object"}
-                kwargs["temperature"] = 0.0 # Force deterministic output for JSON
-            elif not THINKING:
-                kwargs["temperature"] = self.temperature
-
-            response = self.client.chat.completions.create(**kwargs)
+            response = self.client.models.generate_content(
+                model=self.answerer_model,
+                contents=prompt,
+                config=config
+            )
             
-            text = response.choices[0].message.content
+            text = response.text
             
-            # Basic cleanup if markdown fences leak through
             if json_mode:
-                text = text.strip()
-                if text.startswith("```"):
-                    lines = text.splitlines()
-                    if lines[0].startswith("```"):
-                        lines = lines[1:]
-                    if lines and lines[-1].strip() == "```":
-                        lines = lines[:-1]
-                    text = "\n".join(lines).strip()
+                text = self._clean_json_response(text)
             return text
         except Exception as e:
-            logger.error(f"Error during DeepSeek completion: {e}")
+            logger.error(f"Error during Gemini completion: {e}")
             return ""
 
+    def stream_complete(self, prompt: str) -> Generator[str, None, None]:
+        """Generates a stream of tokens using the answerer model."""
+        try:
+            thinking_config = None
+            if "gemini-3" in self.answerer_model:
+                try:
+                    thinking_config = types.ThinkingConfig(thinking_level="low")
+                except (AttributeError, TypeError):
+                    thinking_config = types.ThinkingConfig(include_thoughts=True)
+
+            config = types.GenerateContentConfig(
+                max_output_tokens=self.max_output_tokens,
+                temperature=self.temperature,
+                thinking_config=thinking_config
+            )
+
+            response = self.client.models.generate_content_stream(
+                model=self.answerer_model,
+                contents=prompt,
+                config=config
+            )
+            
+            for chunk in response:
+                if chunk.text:
+                    yield chunk.text
+        except Exception as e:
+            logger.error(f"Error during Gemini streaming: {e}")
+            yield f"Error: {str(e)}"
+
     def summarize_batch(self, snippets: List[CodeSnippet], child_summaries_map: Dict[str, List[str]]):
-        """Summarizes a batch of snippets in a single LLM call."""
+        """Summarizes a batch of snippets using the summarizer model (Gemini 2.5 Flash Lite)."""
         if not snippets:
             return
             
@@ -143,10 +161,22 @@ class DeepSeekLLM:
             })
 
         try:
-            logger.info(f"Batch summarizing {len(snippets)} snippets with DeepSeek...")
+            logger.info(f"Batch summarizing {len(snippets)} snippets with {self.summarizer_model}...")
             prompt = BATCH_SUMMARY_PROMPT.format(components_json=json.dumps(components, indent=2))
             
-            response_text = self.complete(prompt, json_mode=True)
+            config = types.GenerateContentConfig(
+                max_output_tokens=self.max_output_tokens,
+                temperature=0.0,
+                response_mime_type="application/json"
+            )
+            
+            response = self.client.models.generate_content(
+                model=self.summarizer_model,
+                contents=prompt,
+                config=config
+            )
+            
+            response_text = self._clean_json_response(response.text)
             if not response_text:
                 return
 
@@ -154,8 +184,6 @@ class DeepSeekLLM:
                 results = json.loads(response_text)
             except json.JSONDecodeError as je:
                 logger.warning(f"Failed to parse JSON directly. Attempting extraction. Error: {je}")
-                # Fallback extraction logic
-                import re
                 match = re.search(r"(\{.*\})", response_text, re.DOTALL)
                 if match:
                     try:
@@ -168,7 +196,13 @@ class DeepSeekLLM:
 
             for s in snippets:
                 if s.id in results:
-                    s.summary = results[s.id]
+                    val = results[s.id]
+                    if isinstance(val, dict):
+                        # If the LLM returned a JSON object instead of a string,
+                        # try to get a 'summary' or 'content' key, otherwise dump to string.
+                        s.summary = val.get("summary") or val.get("content") or json.dumps(val)
+                    else:
+                        s.summary = str(val) if val is not None else None
         except Exception as e:
             logger.error(f"Error in batch summarization: {e}")
 
@@ -176,5 +210,17 @@ class DeepSeekLLM:
         """Generates a summary for a single snippet."""
         self.summarize_batch([snippet], {snippet.id: child_summaries or []})
 
+    def _clean_json_response(self, text: str) -> str:
+        """Basic cleanup for JSON responses."""
+        text = text.strip()
+        if text.startswith("```"):
+            lines = text.splitlines()
+            if lines[0].startswith("```"):
+                lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines).strip()
+        return text
+
 def get_llm():
-    return DeepSeekLLM()
+    return GeminiLLM()

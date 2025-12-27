@@ -2,6 +2,8 @@ import os
 import hashlib
 import logging
 import threading
+import queue
+from tqdm import tqdm
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from concurrent.futures import ThreadPoolExecutor, wait, FIRST_COMPLETED
@@ -28,10 +30,11 @@ class ProjectIndexer:
     Handles indexing for a single specific folder/workspace.
     All operations are manual, allowing for fine-grained control.
     """
-    def __init__(self, src_path: str, chunk_size: int = 1000, max_workers: int = 10):
+    def __init__(self, src_path: str, chunk_size: int = 1000, max_workers: int = 10, disable_summary: bool = False):
         self.src_path = os.path.abspath(src_path)
         self.chunk_size = chunk_size
         self.max_workers = max_workers
+        self.disable_summary = disable_summary
         
         self.context = self._create_context(self.src_path)
         self.llm = get_llm()
@@ -44,6 +47,8 @@ class ProjectIndexer:
         self.chroma: Optional[ChromaStorage] = None
         self.changed_files: set[str] = set()
         self.all_encountered_files: Dict[str, str] = {}
+        self._embedding_cache: Dict[str, Any] = {} # To support pipelined embedding
+        self._embedding_queue: queue.Queue = queue.Queue()
 
     def _create_context(self, path: str) -> ProjectContext:
         folder_name = os.path.basename(path.rstrip(os.sep))
@@ -114,8 +119,54 @@ class ProjectIndexer:
         logger.info(f"Successfully extracted {len(snippets)} snippets")
         return snippets
 
-    def summarize_snippets(self, snippets: List[CodeSnippet], batch_size: int = 5):
-        """Pass 3: Generates semantic summaries using a parallel batched bottom-up approach."""
+    def summarize_snippets(self, snippets: List[CodeSnippet], batch_size: int = 5, embed_batch_size: int = 1):
+        """Pass 3: Generates semantic summaries and pipelines embeddings to the GPU."""
+        if self.disable_summary:
+            logger.info("Pass 3: Summarization disabled. Pipelining embeddings without summaries.")
+            # Still run the embedding pipeline, but skip LLM summarization
+            pbar = tqdm(total=len(snippets), desc="Pipelining Embeddings", unit="snippet")
+            for s in snippets:
+                self._embedding_queue.put(s)
+            
+            # Start embedding worker to process the queue
+            def embedding_worker():
+                while True:
+                    batch = []
+                    try:
+                        item = self._embedding_queue.get()
+                        if item is None:
+                            break
+                        batch.append(item)
+                        while len(batch) < embed_batch_size:
+                            try:
+                                next_item = self._embedding_queue.get_nowait()
+                                if next_item is None:
+                                    break
+                                batch.append(next_item)
+                            except queue.Empty:
+                                break
+                    except Exception:
+                        break
+                    
+                    if batch:
+                        try:
+                            embeddings = self.embedding_model.embed_snippets(batch, batch_size=1, use_summary=False)
+                            for i, s in enumerate(batch):
+                                self._embedding_cache[s.id] = embeddings[i]
+                                pbar.update(1)
+                        except Exception as e:
+                            logger.error(f"Error in embedding pipeline: {e}")
+                        finally:
+                            for _ in range(len(batch)):
+                                self._embedding_queue.task_done()
+
+            embed_thread = threading.Thread(target=embedding_worker, daemon=True)
+            embed_thread.start()
+            self._embedding_queue.put(None)
+            embed_thread.join()
+            pbar.close()
+            return
+
         if not self.llm:
             logger.warning("LLM not initialized, skipping summarization")
             return
@@ -129,7 +180,7 @@ class ProjectIndexer:
                 unique_snippets.append(s)
         snippets = unique_snippets
 
-        logger.info(f"Pass 3: Generating hierarchical summaries (batched, size={batch_size}, workers={self.max_workers})")
+        logger.info(f"Pass 3: Generating hierarchical summaries and pipelined embeddings (LLM batch={batch_size}, GPU batch={embed_batch_size})")
         
         id_to_snippet = {s.id: s for s in snippets}
         parent_to_children = {}
@@ -160,6 +211,53 @@ class ProjectIndexer:
         processed_count = 0
         summarized_ids = set()
 
+        # Embedding Worker Thread
+        def embedding_worker():
+            logger.debug("Embedding worker thread started")
+            while True:
+                # Get a batch of snippets from the queue
+                batch = []
+                try:
+                    # Wait for the first item
+                    item = self._embedding_queue.get()
+                    if item is None: # Sentinel
+                        break
+                    batch.append(item)
+                    
+                    # Try to pick up more items if they are ready, up to embed_batch_size
+                    while len(batch) < embed_batch_size:
+                        try:
+                            next_item = self._embedding_queue.get_nowait()
+                            if next_item is None:
+                                break
+                            batch.append(next_item)
+                        except queue.Empty:
+                            break
+                except Exception as e:
+                    logger.error(f"Error in embedding worker queue: {e}")
+                    break
+                
+                if batch:
+                    try:
+                        logger.debug(f"Embedding pipeline processing batch of {len(batch)}")
+                        embeddings = self.embedding_model.embed_snippets(batch, batch_size=1)
+                        for i, s in enumerate(batch):
+                            self._embedding_cache[s.id] = embeddings[i]
+                    except Exception as e:
+                        logger.error(f"Error in embedding pipeline worker: {e}")
+                    finally:
+                        for _ in range(len(batch)):
+                            self._embedding_queue.task_done()
+            logger.debug("Embedding worker thread finished")
+
+        embed_thread = threading.Thread(target=embedding_worker, daemon=True)
+        embed_thread.start()
+
+        # Immediately queue snippets that don't need LLM summaries
+        for s in snippets:
+            if s.id not in needs_llm:
+                self._embedding_queue.put(s)
+
         def do_batch(batch_ids):
             to_summarize = []
             child_summaries_map = {}
@@ -185,13 +283,21 @@ class ProjectIndexer:
                     snippet_names = [s.name for s in to_summarize]
                     logger.info(f"Summarizing batch of {len(to_summarize)}: {snippet_names}")
                     self.llm.summarize_batch(to_summarize, child_summaries_map)
+                    
+                    # After summarization, queue for embedding
+                    for s in to_summarize:
+                        self._embedding_queue.put(s)
                 except Exception as e:
                     logger.error(f"Error in batch summarization thread: {e}")
+            else:
+                # If they didn't need summarization but were in a batch, they were already queued above
+                pass
             
             return batch_ids
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = []
+            pbar = tqdm(total=len(snippets), desc="Summarizing & Embedding", unit="snippet")
             while processed_count < len(snippets):
                 with lock:
                     while ready_pool:
@@ -213,6 +319,7 @@ class ProjectIndexer:
                                 if sid not in summarized_ids:
                                     summarized_ids.add(sid)
                                     processed_count += 1
+                                    pbar.update(1)
                                     snippet = id_to_snippet[sid]
                                     if snippet.parent_id and snippet.parent_id in id_to_snippet:
                                         pid = snippet.parent_id
@@ -221,6 +328,7 @@ class ProjectIndexer:
                                             ready_pool.append(pid)
                     except Exception as e:
                         logger.error(f"Batch processing error: {e}")
+            pbar.close()
 
         unprocessed_ids = [sid for sid in id_to_snippet if sid not in summarized_ids]
         if unprocessed_ids:
@@ -228,6 +336,15 @@ class ProjectIndexer:
             logger.warning(f"Summarization incomplete. {len(unprocessed_ids)} nodes were skipped (likely a cycle): {unprocessed_names}...")
 
         logger.info("Hierarchical summarization completed")
+        
+        # Shutdown the embedding worker
+        self._embedding_queue.put(None)
+        embed_thread.join()
+        logger.info("Pipelined embedding completed")
+        
+        # Clear GPU cache after heavy processing
+        if hasattr(self.embedding_model, 'clear_cache'):
+            self.embedding_model.clear_cache()
 
     def extract_relationships(self, snippets: List[CodeSnippet]) -> List[Relationship]:
         """Pass 2: Builds the semantic graph between snippets, skipping unchanged files."""
@@ -239,17 +356,48 @@ class ProjectIndexer:
         logger.info(f"Successfully extracted {len(relationships)} relationships")
         return relationships
 
-    def embed_snippets(self, snippets: List[CodeSnippet], batch_size: int = 8, use_summary: bool = True) -> List[Optional[Any]]:
-        """Pass 4: Generates semantic embeddings for snippets."""
+    def embed_snippets(self, snippets: List[CodeSnippet], batch_size: int = 1, use_summary: Optional[bool] = None) -> List[Optional[Any]]:
+        """Pass 4: Generates semantic embeddings for snippets. Uses cache if pipelining was used."""
+        if use_summary is None:
+            use_summary = not self.disable_summary
+
         if not self.embedding_model:
             logger.warning("Embedding model not initialized, skipping embedding")
             return [None] * len(snippets)
 
-        logger.info(f"Pass 4: Generating embeddings for {len(snippets)} snippets (batch_size={batch_size}, use_summary={use_summary})")
+        logger.info(f"Pass 4: Resolving embeddings for {len(snippets)} snippets")
         
-        embeddings = self.embedding_model.embed_snippets(snippets, batch_size=batch_size, use_summary=use_summary)
-        logger.info(f"Successfully generated {len(embeddings)} embeddings")
-        return embeddings
+        results = []
+        to_embed = []
+        to_embed_indices = []
+
+        for i, snippet in enumerate(snippets):
+            if snippet.id in self._embedding_cache:
+                results.append(self._embedding_cache[snippet.id])
+            else:
+                results.append(None)
+                to_embed.append(snippet)
+                to_embed_indices.append(i)
+
+        if to_embed:
+            logger.info(f"Embedding {len(to_embed)} remaining snippets (not caught in pipeline)")
+            try:
+                new_embeddings = self.embedding_model.embed_snippets(to_embed, batch_size=batch_size, use_summary=use_summary)
+                for i, emb in enumerate(new_embeddings):
+                    results[to_embed_indices[i]] = emb
+                    # Also cache for future calls
+                    self._embedding_cache[to_embed[i].id] = emb
+            except Exception as e:
+                logger.error(f"Final embedding pass failed: {e}")
+                # Fallback handled within embed_snippets now
+
+        logger.info(f"Successfully resolved {len(results)} embeddings")
+        
+        # Clear cache again
+        if hasattr(self.embedding_model, 'clear_cache'):
+            self.embedding_model.clear_cache()
+            
+        return results
 
     def save(self, snippets: List[CodeSnippet], relationships: List[Relationship], embeddings: Optional[List[Any]] = None):
         """Persists extracted data to both relational and graph storage."""

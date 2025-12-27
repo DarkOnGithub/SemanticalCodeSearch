@@ -37,8 +37,9 @@ class ChromaStorage:
             }
             metadatas.append(meta)
         
-        # We store content as the documents in ChromaDB
-        documents = [s.content for s in snippets]
+        # We store the context-rich representation as the documents in ChromaDB
+        # This improves reranking performance and provides more context in search results
+        documents = [s.to_embeddable_text(use_summary=True) for s in snippets]
 
         # Use batching for large number of snippets
         batch_size = 500

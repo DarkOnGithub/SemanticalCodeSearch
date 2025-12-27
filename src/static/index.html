@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en" class="antialiased">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Semantic Code Search</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+        
+        :root {
+            --bg-page: #09090b;
+            --bg-card: #18181b;
+            --bg-input: #18181b;
+            --border-color: #27272a;
+            --primary: #3b82f6; /* A clean, professional blue */
+            --text-main: #e4e4e7;
+            --text-muted: #a1a1aa;
+        }
+
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-page);
+            color: var(--text-main);
+        }
+
+        .font-mono {
+            font-family: 'JetBrains Mono', 'Fira Code', monospace;
+        }
+
+        /* Custom Scrollbar */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+        ::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        ::-webkit-scrollbar-thumb {
+            background-color: #3f3f46;
+            border-radius: 4px;
+        }
+        ::-webkit-scrollbar-thumb:hover {
+            background-color: #52525b;
+        }
+
+        /* Markdown Styles */
+        .markdown-content {
+            color: #d4d4d8;
+            line-height: 1.7;
+        }
+        .markdown-content p { margin-bottom: 1.25rem; }
+        .markdown-content strong { color: #fff; font-weight: 600; }
+        .markdown-content code {
+            background: #27272a;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 0.875em;
+            color: #e4e4e7;
+        }
+        .markdown-content pre {
+            background: #18181b;
+            padding: 1rem;
+            border-radius: 0.5rem;
+            border: 1px solid var(--border-color);
+            overflow-x: auto;
+            margin: 1.5rem 0;
+        }
+        .markdown-content pre code {
+            background: transparent;
+            padding: 0;
+            border: none;
+            color: inherit;
+        }
+        .markdown-content ul { list-style-type: disc; padding-left: 1.5rem; margin-bottom: 1rem; color: var(--text-muted); }
+        .markdown-content li { margin-bottom: 0.5rem; }
+        .markdown-content h1, .markdown-content h2, .markdown-content h3 {
+            color: #fff;
+            font-weight: 600;
+            margin-top: 2rem;
+            margin-bottom: 1rem;
+            letter-spacing: -0.025em;
+        }
+        .markdown-content h2 { font-size: 1.25rem; border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem; }
+        .markdown-content h3 { font-size: 1.1rem; }
+    </style>
+</head>
+<body class="min-h-screen flex flex-col items-center">
+
+    <div class="w-full max-w-5xl px-6 py-12">
+        
+        <header class="flex flex-col md:flex-row justify-between items-start md:items-center mb-10 gap-4">
+            <div>
+                <h1 class="text-xl font-semibold tracking-tight text-white flex items-center gap-3">
+                    <i class="fas fa-layer-group text-blue-500"></i>
+                    Semantic Code Search
+                </h1>
+            </div>
+            
+            <div class="flex items-center gap-3 bg-zinc-900/50 p-1.5 rounded-lg border border-zinc-800">
+                <div id="index-status" class="flex items-center gap-2 px-3 py-1.5">
+                    <div class="w-2 h-2 rounded-full bg-zinc-600 transition-colors duration-300" id="status-dot"></div>
+                    <span class="text-xs font-medium text-zinc-400" id="status-text">Checking...</span>
+                </div>
+                <div class="w-px h-4 bg-zinc-800"></div>
+                <button onclick="reindex()" id="reindex-btn" class="px-3 py-1.5 rounded hover:bg-zinc-800 text-zinc-400 hover:text-white transition-all text-xs font-medium flex items-center gap-2">
+                    <i class="fas fa-sync-alt" id="reindex-icon"></i>
+                    Reindex
+                </button>
+            </div>
+        </header>
+
+        <div class="mb-10">
+            <form id="search-form" class="relative group">
+                <div class="absolute left-4 top-1/2 -translate-y-1/2 text-zinc-500 group-focus-within:text-blue-500 transition-colors">
+                    <i class="fas fa-search"></i>
+                </div>
+                <input 
+                    type="text" 
+                    id="search-input"
+                    placeholder="Ask a question about your codebase..."
+                    class="w-full bg-zinc-900/50 border border-zinc-800 rounded-xl py-4 pl-12 pr-32 text-zinc-200 placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500/50 transition-all text-base shadow-sm"
+                    autocomplete="off"
+                >
+                <button type="submit" class="absolute right-2 top-2 bottom-2 px-4 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-white font-medium text-sm transition-colors border border-zinc-700">
+                    Analyze
+                </button>
+            </form>
+        </div>
+
+        <div class="flex flex-col gap-8">
+            
+            <div id="placeholder-area" class="hidden flex flex-col items-center justify-center py-20 text-zinc-600">
+                <div id="placeholder-icon" class="text-4xl mb-4 text-zinc-700">
+                    <i class="fas fa-circle-notch fa-spin"></i>
+                </div>
+                <p id="placeholder-text" class="text-sm font-medium">Processing query...</p>
+            </div>
+
+            <div id="initial-state" class="flex flex-col items-center justify-center py-20 text-zinc-600 border border-dashed border-zinc-800 rounded-2xl bg-zinc-900/20">
+                <i class="fas fa-terminal text-4xl mb-4 opacity-50"></i>
+                <p class="text-sm">Enter a query above to start searching.</p>
+            </div>
+
+            <div id="results-area" class="hidden animate-fade-in">
+                
+                <div id="hyde-section" class="hidden mb-10">
+                    <div class="flex items-center gap-2 mb-3">
+                        <span class="bg-amber-500/10 text-amber-400 text-xs font-medium px-2 py-0.5 rounded border border-amber-500/20">HYDE AUGMENTED</span>
+                    </div>
+                    <div class="bg-amber-900/10 border border-amber-900/30 rounded-xl p-4 overflow-hidden">
+                        <p class="text-[10px] uppercase tracking-wider font-bold text-amber-500/50 mb-3">Hypothetical code generated by Gemma 2B</p>
+                        <pre id="hyde-content" class="text-xs font-mono text-amber-200/80 overflow-x-auto custom-scrollbar leading-relaxed"></pre>
+                    </div>
+                </div>
+
+                <div class="mb-10">
+                    <div class="flex items-center gap-2 mb-4">
+                        <span class="bg-blue-500/10 text-blue-400 text-xs font-medium px-2 py-0.5 rounded border border-blue-500/20">AI ANALYSIS</span>
+                    </div>
+                    <div id="answer-content" class="markdown-content text-zinc-300"></div>
+                </div>
+
+                <div class="border-t border-zinc-800 my-8"></div>
+
+                <div class="flex items-center gap-2 mb-6">
+                     <span class="bg-zinc-800 text-zinc-400 text-xs font-medium px-2 py-0.5 rounded border border-zinc-700">SOURCES</span>
+                </div>
+                
+                <div id="snippets-container" class="space-y-6"></div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const searchForm = document.getElementById('search-form');
+        const searchInput = document.getElementById('search-input');
+        const resultsArea = document.getElementById('results-area');
+        const placeholderArea = document.getElementById('placeholder-area');
+        const initialState = document.getElementById('initial-state');
+        const answerContent = document.getElementById('answer-content');
+        const snippetsContainer = document.getElementById('snippets-container');
+        const hydeSection = document.getElementById('hyde-section');
+        const hydeContent = document.getElementById('hyde-content');
+        const statusText = document.getElementById('status-text');
+        const statusDot = document.getElementById('status-dot');
+        const reindexBtn = document.getElementById('reindex-btn');
+        const reindexIcon = document.getElementById('reindex-icon');
+
+        async function updateStatus() {
+            try {
+                const res = await fetch('/api/status');
+                const data = await res.json();
+                if (data.is_indexed) {
+                    statusText.innerText = `${data.indexed_snippets} snippets indexed`;
+                    statusDot.className = 'w-2 h-2 rounded-full bg-emerald-500';
+                } else {
+                    statusText.innerText = 'Not Indexed';
+                    statusDot.className = 'w-2 h-2 rounded-full bg-amber-500';
+                }
+            } catch (e) {
+                statusText.innerText = 'System Offline';
+                statusDot.className = 'w-2 h-2 rounded-full bg-rose-500';
+            }
+        }
+
+        async function reindex() {
+            if (!confirm('Start full reindexing? This might take a few moments.')) return;
+            
+            reindexBtn.disabled = true;
+            reindexIcon.classList.add('fa-spin');
+            statusText.innerText = 'Indexing...';
+            
+            try {
+                const res = await fetch('/api/reindex', { method: 'POST' });
+                const data = await res.json();
+                if (data.status === 'success') {
+                    // subtle notification could go here
+                } else {
+                    alert('Error: ' + data.error);
+                }
+            } catch (e) {
+                alert('Server connection failed');
+            } finally {
+                reindexBtn.disabled = false;
+                reindexIcon.classList.remove('fa-spin');
+                updateStatus();
+            }
+        }
+
+        searchForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const query = searchInput.value.trim();
+            if (!query) return;
+
+            // UI State Management
+            initialState.classList.add('hidden');
+            resultsArea.classList.add('hidden');
+            hydeSection.classList.add('hidden');
+            placeholderArea.classList.remove('hidden');
+            document.getElementById('placeholder-text').innerText = 'Analyzing codebase...';
+
+            try {
+                // We use the new streaming endpoint
+                const response = await fetch('/api/search/stream', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ query })
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    document.getElementById('placeholder-text').innerText = errorData.error || 'Search failed';
+                    return;
+                }
+
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                let answerText = '';
+                let hasMetadata = false;
+
+                // Prepare results area
+                answerContent.innerHTML = '';
+                snippetsContainer.innerHTML = '';
+                resultsArea.classList.remove('hidden');
+                placeholderArea.classList.add('hidden');
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            const dataStr = line.slice(6);
+                            if (dataStr === '[DONE]') break;
+
+                            try {
+                                const data = JSON.parse(dataStr);
+                                
+                                if (data.type === 'metadata') {
+                                    // Handle Metadata and Snippets
+                                    if (data.hyde_used && data.final_query) {
+                                        const parts = data.final_query.split('\n\nHypothetical code implementation:\n');
+                                        if (parts.length > 1) {
+                                            hydeContent.textContent = parts[1].trim();
+                                            hydeSection.classList.remove('hidden');
+                                        }
+                                    }
+
+                                    data.snippets.forEach(snippet => {
+                                        const div = document.createElement('div');
+                                        div.className = 'border border-zinc-800 rounded-lg overflow-hidden bg-zinc-900/30';
+                                        div.innerHTML = `
+                                            <div class="bg-zinc-900/50 px-4 py-3 border-b border-zinc-800 flex justify-between items-center">
+                                                <div class="flex items-center gap-2 overflow-hidden">
+                                                    <i class="far fa-file-code text-zinc-500"></i>
+                                                    <span class="text-sm font-medium text-zinc-300 truncate font-mono">
+                                                        ${snippet.name}
+                                                    </span>
+                                                </div>
+                                                <span class="text-xs text-zinc-500 font-mono flex-shrink-0">
+                                                    ${snippet.file_path}:${snippet.start_line}
+                                                </span>
+                                            </div>
+                                            ${snippet.summary ? `
+                                            <div class="px-4 py-2 bg-blue-900/10 border-b border-zinc-800/50">
+                                                <p class="text-xs text-blue-200/80 leading-relaxed">
+                                                    <i class="fas fa-info-circle mr-1 opacity-70"></i> ${snippet.summary}
+                                                </p>
+                                            </div>` : ''}
+                                            ${snippet.relations && snippet.relations.length > 0 ? `
+                                            <div class="px-4 py-2 border-b border-zinc-800/50 flex flex-wrap gap-2">
+                                                ${snippet.relations.map(rel => `
+                                                    <span class="text-[10px] px-1.5 py-0.5 rounded bg-zinc-800 border border-zinc-700 text-zinc-400">
+                                                        <span class="text-blue-400 font-bold uppercase mr-1">${rel[0]}</span> ${rel[1]}
+                                                    </span>
+                                                `).join('')}
+                                            </div>` : ''}
+                                            <div class="relative group">
+                                                <pre class="p-4 overflow-x-auto text-sm leading-relaxed font-mono text-zinc-400 custom-scrollbar" style="background: #09090b;"><code>${escapeHtml(snippet.content)}</code></pre>
+                                            </div>
+                                        `;
+                                        snippetsContainer.appendChild(div);
+                                    });
+                                } else if (data.type === 'token') {
+                                    // Handle incrementally streaming tokens
+                                    answerText += data.token;
+                                    answerContent.innerHTML = marked.parse(answerText);
+                                }
+                            } catch (e) {
+                                console.error('Error parsing stream chunk:', e);
+                            }
+                        }
+                    }
+                }
+            } catch (e) {
+                document.getElementById('placeholder-text').innerText = 'Connection error: ' + e.message;
+            }
+        });
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        // Initial setup
+        updateStatus();
+        setInterval(updateStatus, 10000);
+    </script>
+</body>
+</html>

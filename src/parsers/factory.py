@@ -9,7 +9,7 @@ from src.IR.models import CodeSnippet
 logger = logging.getLogger(__name__)
 
 class ParserFactory:
-    def __init__(self, chunk_size: int = 1500, llm: Optional[Any] = None):
+    def __init__(self, chunk_size: int = 500, llm: Optional[Any] = None):
         self.chunk_size = chunk_size
         self._parsers: Dict[str, BaseParser] = {
             "py": PythonParser(chunk_size=chunk_size, llm=llm),

@@ -47,6 +47,17 @@ class SQLiteStorage:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             for s in snippets:
+                # Defensive check for summary and parent_id which are sometimes mangled by LLM or logic
+                summary = s.summary
+                if summary is not None and not isinstance(summary, str):
+                    logger.warning(f"Snippet {s.id} has non-string summary of type {type(summary)}. Converting to string.")
+                    summary = json.dumps(summary) if isinstance(summary, (dict, list)) else str(summary)
+
+                parent_id = s.parent_id
+                if parent_id is not None and not isinstance(parent_id, str):
+                    logger.warning(f"Snippet {s.id} has non-string parent_id of type {type(parent_id)}. Converting to string.")
+                    parent_id = str(parent_id)
+
                 cursor.execute("""
                     INSERT OR REPLACE INTO snippets (
                         id, name, type, content, summary, parent_id, docstring, signature, 
@@ -57,8 +68,8 @@ class SQLiteStorage:
                     s.name,
                     s.type.value,
                     s.content,
-                    s.summary,
-                    s.parent_id,
+                    summary,
+                    parent_id,
                     s.docstring,
                     s.signature,
                     s.file_path,
