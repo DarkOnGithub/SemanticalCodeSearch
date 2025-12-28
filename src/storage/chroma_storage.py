@@ -10,8 +10,11 @@ class ChromaStorage:
     def __init__(self, path: str = "data/chroma", collection_name: str = "codebase"):
         os.makedirs(path, exist_ok=True)
         self.client = chromadb.PersistentClient(path=path)
-        self.collection = self.client.get_or_create_collection(name=collection_name)
-        logger.info(f"ChromaDB initialized at {path}, collection: {collection_name}")
+        self.collection = self.client.get_or_create_collection(
+            name=collection_name,
+            metadata={"hnsw:space": "cosine"}
+        )
+        logger.info(f"ChromaDB initialized at {path}, collection: {collection_name} (cosine similarity)")
 
     def save_snippets(self, snippets: List[CodeSnippet], embeddings: List[Any]):
         """
